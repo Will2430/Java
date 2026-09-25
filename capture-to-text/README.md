@@ -1,22 +1,27 @@
-# Capture to Text — Phase 2 (async OCR via Kafka)
+# Capture to Text
 
-Upload or drag-drop an image; OCR (Tesseract, via Tess4J) now runs
-asynchronously in a separate worker process, decoupled from the upload
-request by Kafka. Every capture is saved to MongoDB so you can browse
-history, and image bytes live in MinIO (S3-compatible) so the worker can
-reach them from its own process.
+Upload or drag-drop an image; OCR (Tesseract, via Tess4J) runs asynchronously
+in a separate worker process, decoupled from the upload request by Kafka.
+Every capture is saved to MongoDB so you can browse history, and image bytes
+live in MinIO (S3-compatible) so the worker can reach them from its own
+process. The API module is containerized and deployable to a local
+Kubernetes cluster (minikube); the worker currently still runs as a plain
+process (see [Project layout](#project-layout) / [Known limitations](#known-limitations)).
 
-**Architecture (Phase 2):**
+**Architecture:**
 ```
 Browser (static HTML/JS)
-  → Spring Boot API (capture-to-text/) → MongoDB (capture metadata) + MinIO (image bytes)
+  → Spring Boot API → MongoDB (capture metadata) + MinIO (image bytes)
       → Kafka topic "capture-uploads"
-          → Worker (capture-to-text/worker/) → Tess4J (OCR) → MongoDB (result)
+          → Worker → Tess4J (OCR) → MongoDB (result)
 ```
+The API runs either as a plain `mvnw spring-boot:run` process or as a
+Kubernetes Deployment (`k8s/`) — same code, same image, different host for
+reaching Mongo/Kafka/MinIO (`localhost` locally, `host.minikube.internal`
+from inside a Pod). The worker only runs as a plain process today.
 
 The API returns `202 Accepted` immediately; the client polls
-`GET /api/captures/{id}` until `status` leaves `PENDING`. No auth yet — that's
-still Phase 2+.
+`GET /api/captures/{id}` until `status` leaves `PENDING`. No auth yet.
 
 ---
 
@@ -26,9 +31,10 @@ still Phase 2+.
 |---|---|---|
 | JDK | 17+ (built/tested with Temurin 21) | Yes |
 | MongoDB Community Server | tested with 8.3.4, default port 27017 | Yes, running locally |
-| Docker (with Compose) | any recent version | Yes — runs Kafka + MinIO locally |
+| Docker (with Compose) | any recent version | Yes — runs Kafka + MinIO locally, and builds the API's image |
 | Maven | **not required** — the bundled Maven Wrapper (`mvnw` / `mvnw.cmd`) downloads Maven 3.9.9 automatically on first run | No |
 | Tesseract OCR | **not required as a separate install on Windows/Linux/macOS** — see note below | No |
+| minikube + `kubectl` | tested with minikube v1.39.0, Kubernetes v1.37.0 | Only if deploying the API to Kubernetes — see [step 4](#4-optional-deploy-the-api-to-kubernetes) |
 
 ### About Tesseract / Tess4J
 
@@ -92,12 +98,18 @@ From the project root (`capture-to-text/`):
 ```bash
 docker compose up -d
 ```
-This starts a single-broker Kafka (KRaft mode, no separate Zookeeper) on
-`localhost:9092` and MinIO (S3-compatible object storage) on `localhost:9000`
-(console on `localhost:9001`, login `minioadmin` / `minioadmin`). The API
-creates its `captures` bucket automatically on startup — no manual MinIO
-setup needed. `capture-uploads`, the Kafka topic, is created automatically
-on first publish with 3 partitions (see `docker-compose.yml`).
+This starts a single-broker Kafka (KRaft mode, no separate Zookeeper) and
+MinIO (S3-compatible object storage) on `localhost:9000` (console on
+`localhost:9001`, login `minioadmin` / `minioadmin`). The API creates its
+`captures` bucket automatically on startup — no manual MinIO setup needed.
+`capture-uploads`, the Kafka topic, is created automatically on first
+publish with 3 partitions (see `docker-compose.yml`).
+
+Kafka exposes **two listeners**: `localhost:9092` for processes running
+directly on the host (the API/worker via `mvnw`), and `localhost:29092`
+(advertised inside the cluster as `host.minikube.internal:29092`) for a
+Pod running the containerized API — see [step 4](#4-optional-deploy-the-api-to-kubernetes).
+Local `mvnw` runs only ever need `9092`.
 
 ---
 
@@ -140,7 +152,40 @@ java -jar target\capture-to-text-0.1.0.jar
 
 ---
 
-## 4. Using the client
+## 4. (Optional) Deploy the API to Kubernetes
+
+The API module can run as a Kubernetes Deployment instead of a plain
+process — the worker still needs to run locally either way (it isn't
+containerized yet).
+
+```powershell
+# Start the cluster
+minikube start --driver=docker
+
+# Build the image and load it into minikube's own container runtime
+# (separate from Docker Desktop's image store — a build alone isn't enough)
+docker build -t capture-to-text-api:local .
+minikube image load capture-to-text-api:local
+
+# Apply the manifests (Deployment, Service, ConfigMap, Secret)
+kubectl apply -f k8s/
+
+# Verify
+kubectl get pods -l app=capture-api      # expect 1/1 Running
+kubectl port-forward svc/capture-api 8080:8080
+# then open http://localhost:8080
+```
+
+`kubectl port-forward` is the reliable way to reach it locally — on
+Windows with the docker driver, `minikube service --url` has to hold a
+terminal open as a tunnel for the life of the connection, which
+`port-forward` doesn't need. See `k8s/configmap.yaml` for how the Pod
+reaches Mongo/Kafka/MinIO on the host (`host.minikube.internal`, not
+`localhost` — inside a Pod, `localhost` means the Pod itself).
+
+---
+
+## 5. Using the client
 
 - Drag an image onto the drop zone, click it to open a file picker, or
   paste (Ctrl/Cmd+V) a screenshot directly from your clipboard.
@@ -179,7 +224,9 @@ curl -X POST http://localhost:8080/api/captures -F "image=@screenshot.png"
 
 ```
 capture-to-text/
-├── docker-compose.yml               # local Kafka (KRaft) + MinIO
+├── docker-compose.yml               # local Kafka (KRaft, dual listeners) + MinIO
+├── Dockerfile, .dockerignore        # multi-stage build for the API module
+├── k8s/                             # Deployment, Service, ConfigMap, Secret
 ├── mvnw, mvnw.cmd, .mvn/            # Maven Wrapper (API module)
 ├── pom.xml                          # API module
 ├── src/main/java/com/capturetotext/app/
@@ -207,13 +254,24 @@ capture-to-text/
 │       ├── repository/CaptureRepository.java
 │       └── model/Capture.java, CaptureStatus.java    # own copy, same collection
 │
-└── CONCEPTS.md                      # deep-dive explanations of every concept used here
+├── CONCEPTS.md                      # deep-dive explanations of every concept used here
+└── CLAUDE.md                        # architecture reference + known simplifications
 ```
 
-## What's next (Phase 2, remaining)
+## Known limitations
 
-- Auth / user accounts.
-- Packaging the API + worker themselves in Docker (currently only their
-  infra — Kafka/MinIO — runs in Docker; the JVM processes still run via
-  `mvnw spring-boot:run`).
-- Browser extension for direct screen-region capture.
+- **No auth.** Anyone reaching the API can upload and browse all captures.
+- **The worker isn't containerized or deployed to Kubernetes.** It still
+  runs as a plain `mvnw spring-boot:run` process — the API is the only
+  module with a `Dockerfile`/k8s manifests today.
+- **No cancel or timeout.** A `Capture` that never gets picked up (e.g. a
+  Kafka publish that silently fails) stays `PENDING` forever — there's no
+  cancel endpoint and no expiry sweep.
+- **No outbox pattern.** The `Capture` row is saved to MongoDB *before* the
+  Kafka publish; if the publish then fails, the row is already committed as
+  `PENDING` with no rollback.
+- **Single MongoDB instance, single Kafka broker.** No replication or
+  failover — see `CLAUDE.md` for what each of these would need to survive
+  real production traffic.
+- Not yet built: browser extension for direct screen-region capture, Helm
+  chart, Ingress/TLS in front of the k8s Service.
