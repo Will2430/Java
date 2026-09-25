@@ -1,0 +1,51 @@
+services:
+  kafka:
+    image: apache/kafka:latest
+    container_name: capture-kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # Two listeners for two audiences: PLAINTEXT is for clients on the host
+      # itself (the worker's `mvnw spring-boot:run`, local testing) — advertised
+      # as localhost, unchanged. PLAINTEXT_HOST is for clients inside minikube
+      # Pods, which can reach this container via `host.minikube.internal` but
+      # cannot resolve "localhost" as anything but themselves. Kafka's client
+      # protocol advertises a host:port in its metadata response *per listener
+      # the client connected on*, so without a second listener, a Pod's
+      # producer/consumer gets redirected to advertise-localhost and tries to
+      # reconnect to itself -- the bug that left captures stuck PENDING.
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_HOST://host.minikube.internal:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Default partition count for auto-created topics. "capture-uploads" gets
+      # created with 3 partitions on first publish, on purpose -- Lesson 0006
+      # (see Learning/lessons/0006-kafka-fundamentals.html) is about partition
+      # count being the real parallelism ceiling; 1 partition would make that
+      # invisible once you try running two worker instances.
+      KAFKA_NUM_PARTITIONS: 3
+
+  minio:
+    image: minio/minio:latest
+    container_name: capture-minio
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+
+volumes:
+  minio-data:

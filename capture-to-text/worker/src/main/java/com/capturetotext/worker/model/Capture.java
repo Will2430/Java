@@ -1,10 +1,17 @@
-package com.capturetotext.app.model;
+package com.capturetotext.worker.model;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
 
+/**
+ * Own copy of the API module's Capture entity, mapped to the same
+ * "captures" collection. This worker only ever fetches an existing document
+ * and mutates it (status/extractedText/ocrConfidence/errorMessage) -- it
+ * never constructs a new one, so unlike the API's copy there's no
+ * parameterized constructor here.
+ */
 @Document(collection = "captures")
 public class Capture {
 
@@ -17,16 +24,6 @@ public class Capture {
     private String sourceFilename;
     private Double ocrConfidence;
     private String errorMessage;
-
-    public Capture() {
-    }
-
-    public Capture(CaptureStatus status, String imageObjectKey, Instant createdAt, String sourceFilename) {
-        this.status = status;
-        this.imageObjectKey = imageObjectKey;
-        this.createdAt = createdAt;
-        this.sourceFilename = sourceFilename;
-    }
 
     public String getId() {
         return id;

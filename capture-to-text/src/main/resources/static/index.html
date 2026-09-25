@@ -117,13 +117,36 @@ function showPreview(file) {
   preview.style.display = 'block';
 }
 
+// POST /api/captures now returns 202 immediately (status: PENDING) --
+// OCR runs later, out-of-process, in the worker module. The client has to
+// come back and ask GET /api/captures/{id} how it went.
+const POLL_INTERVAL_MS = 1500;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function pollUntilDone(id) {
+  for (;;) {
+    await sleep(POLL_INTERVAL_MS);
+    const res = await fetch(`/api/captures/${id}`);
+    const capture = await res.json();
+    if (!res.ok) {
+      throw new Error(capture.message || `Request failed with status ${res.status}`);
+    }
+    if (capture.status !== 'PENDING') {
+      return capture;
+    }
+  }
+}
+
 async function uploadImage(file) {
   if (!file.type.startsWith('image/')) {
     setStatus('Please provide an image file.', true);
     return;
   }
   showPreview(file);
-  setStatus('Running OCR...');
+  setStatus('Uploading...');
   copyBtn.disabled = true;
   output.value = '';
 
@@ -132,13 +155,21 @@ async function uploadImage(file) {
 
   try {
     const res = await fetch('/api/captures', { method: 'POST', body: formData });
-    const body = await res.json();
+    const pending = await res.json();
     if (!res.ok) {
-      throw new Error(body.message || `Request failed with status ${res.status}`);
+      throw new Error(pending.message || `Request failed with status ${res.status}`);
     }
-    output.value = body.extractedText || '';
-    copyBtn.disabled = !body.extractedText;
-    const confidence = body.ocrConfidence != null ? ` (confidence: ${body.ocrConfidence.toFixed(1)}%)` : '';
+    setStatus('Processing (OCR running in the background)...');
+    loadHistory();
+
+    const capture = await pollUntilDone(pending.id);
+    if (capture.status === 'FAILED') {
+      throw new Error(capture.errorMessage || 'OCR failed.');
+    }
+
+    output.value = capture.extractedText || '';
+    copyBtn.disabled = !capture.extractedText;
+    const confidence = capture.ocrConfidence != null ? ` (confidence: ${capture.ocrConfidence.toFixed(1)}%)` : '';
     setStatus(`Done${confidence}`);
     loadHistory();
   } catch (err) {
@@ -197,10 +228,13 @@ async function loadHistory() {
       const li = document.createElement('li');
       const snippet = document.createElement('span');
       snippet.className = 'snippet';
-      snippet.textContent = (capture.extractedText || '').replace(/\s+/g, ' ').trim() || '(no text found)';
+      snippet.textContent = capture.status === 'PENDING'
+        ? '(processing...)'
+        : (capture.extractedText || '').replace(/\s+/g, ' ').trim() || '(no text found)';
       const meta = document.createElement('span');
       meta.className = 'meta';
-      meta.textContent = new Date(capture.createdAt).toLocaleString();
+      const statusSuffix = capture.status !== 'DONE' ? ` · ${capture.status}` : '';
+      meta.textContent = new Date(capture.createdAt).toLocaleString() + statusSuffix;
       li.appendChild(snippet);
       li.appendChild(meta);
       li.addEventListener('click', () => {

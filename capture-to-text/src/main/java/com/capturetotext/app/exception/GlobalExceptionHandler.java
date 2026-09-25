@@ -19,6 +19,9 @@ import java.util.Map;
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(InvalidImageException.class)
+
+    // we need a different status code for different exceptions
+    // ResponseEntity is also some generic wrapper that represents the entire HTTP response, including its status code, headers and body
     public ResponseEntity<Map<String, Object>> handleInvalidImage(InvalidImageException ex) {
         return errorResponse(HttpStatus.BAD_REQUEST, ex.getMessage());
     }
@@ -51,11 +54,15 @@ public class GlobalExceptionHandler {
     }
 
     private ResponseEntity<Map<String, Object>> errorResponse(HttpStatus status, String message) {
+
+        // LinkedHashMap perserved insertion order, so the keys and value come out in the same order as they were arranged?
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("timestamp", Instant.now().toString());
         body.put("status", status.value());
         body.put("error", status.getReasonPhrase());
         body.put("message", message);
+        
+        // handler has to build and hand back the response object itself
         return ResponseEntity.status(status).body(body);
     }
 }

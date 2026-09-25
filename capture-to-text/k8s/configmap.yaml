@@ -1,0 +1,20 @@
+# Non-secret config for the API pod. Spring Boot's relaxed env-var binding
+# turns SPRING_DATA_MONGODB_URI into spring.data.mongodb.uri automatically --
+# no code changes needed to move these out of application.properties.
+#
+# host.minikube.internal is minikube's equivalent of Docker's
+# host.docker.internal: it resolves, from inside the cluster, to the Windows
+# host machine where Mongo (Windows service), Kafka, and MinIO
+# (docker-compose) are actually running.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: capture-api-config
+data:
+  SPRING_DATA_MONGODB_URI: "mongodb://host.minikube.internal:27017/capturetotext"
+  # Port 29092, not 9092: Kafka needs a listener whose *advertised* address
+  # is actually reachable from a Pod (see docker-compose.yml's PLAINTEXT_HOST
+  # listener) -- 9092's advertised address is "localhost", which inside a
+  # Pod means the Pod itself, not the Kafka container.
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "host.minikube.internal:29092"
+  MINIO_ENDPOINT: "http://host.minikube.internal:9000"

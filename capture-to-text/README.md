@@ -1,12 +1,22 @@
-# Capture to Text — Phase 1 (MVP)
+# Capture to Text — Phase 2 (async OCR via Kafka)
 
-Upload or drag-drop an image, extract its text via OCR (Tesseract, through the
-Tess4J Java wrapper), and copy the result. Every capture is saved to MongoDB
-so you can browse history.
+Upload or drag-drop an image; OCR (Tesseract, via Tess4J) now runs
+asynchronously in a separate worker process, decoupled from the upload
+request by Kafka. Every capture is saved to MongoDB so you can browse
+history, and image bytes live in MinIO (S3-compatible) so the worker can
+reach them from its own process.
 
-**Architecture (Phase 1):** `Browser (static HTML/JS) → Spring Boot REST API → Tess4J (OCR) → MongoDB`
+**Architecture (Phase 2):**
+```
+Browser (static HTML/JS)
+  → Spring Boot API (capture-to-text/) → MongoDB (capture metadata) + MinIO (image bytes)
+      → Kafka topic "capture-uploads"
+          → Worker (capture-to-text/worker/) → Tess4J (OCR) → MongoDB (result)
+```
 
-No queue, no worker service, no auth, no Docker in this phase — that's Phase 2+.
+The API returns `202 Accepted` immediately; the client polls
+`GET /api/captures/{id}` until `status` leaves `PENDING`. No auth yet — that's
+still Phase 2+.
 
 ---
 
@@ -16,6 +26,7 @@ No queue, no worker service, no auth, no Docker in this phase — that's Phase 2
 |---|---|---|
 | JDK | 17+ (built/tested with Temurin 21) | Yes |
 | MongoDB Community Server | tested with 8.3.4, default port 27017 | Yes, running locally |
+| Docker (with Compose) | any recent version | Yes — runs Kafka + MinIO locally |
 | Maven | **not required** — the bundled Maven Wrapper (`mvnw` / `mvnw.cmd`) downloads Maven 3.9.9 automatically on first run | No |
 | Tesseract OCR | **not required as a separate install on Windows/Linux/macOS** — see note below | No |
 
@@ -24,9 +35,11 @@ No queue, no worker service, no auth, no Docker in this phase — that's Phase 2
 This project uses [Tess4J](https://github.com/nguyenq/tess4j), a JNA wrapper
 around the native Tesseract + Leptonica libraries. Tess4J's Maven artifact
 **bundles the native binaries and the English (`eng`) language data** for
-Windows, Linux, and macOS, and `OcrService` extracts them to a temp directory
-at startup (`LoadLibs.extractTessResources("tessdata")`). You do **not** need
-to install Tesseract separately or download `eng.traineddata` yourself.
+Windows, Linux, and macOS, and `worker/`'s `OcrService` extracts them to a
+temp directory at startup (`LoadLibs.extractTessResources("tessdata")`). You
+do **not** need to install Tesseract separately or download
+`eng.traineddata` yourself. Only the worker needs this — the API module
+doesn't run OCR anymore.
 
 The one native dependency Windows needs is the **Microsoft Visual C++ 2019
 Redistributable (x64)** — Tesseract 5.x's Windows binaries are built against
@@ -73,44 +86,71 @@ successful capture — no manual setup needed.
 
 ---
 
-## 2. Run the application
+## 2. Start Kafka + MinIO
 
 From the project root (`capture-to-text/`):
+```bash
+docker compose up -d
+```
+This starts a single-broker Kafka (KRaft mode, no separate Zookeeper) on
+`localhost:9092` and MinIO (S3-compatible object storage) on `localhost:9000`
+(console on `localhost:9001`, login `minioadmin` / `minioadmin`). The API
+creates its `captures` bucket automatically on startup — no manual MinIO
+setup needed. `capture-uploads`, the Kafka topic, is created automatically
+on first publish with 3 partitions (see `docker-compose.yml`).
 
-**Windows:**
+---
+
+## 3. Run the API and the worker
+
+Two separate processes — start each in its own terminal.
+
+**API** (from `capture-to-text/`):
 ```powershell
 $env:JAVA_HOME = "C:\Path\To\Your\JDK"   # only if JAVA_HOME isn't already set
 .\mvnw.cmd spring-boot:run
 ```
-
-**macOS/Linux:**
 ```bash
+# macOS/Linux
 ./mvnw spring-boot:run
 ```
 
-First run downloads Maven itself (via the wrapper) plus all dependencies —
-give it a minute. Once you see:
+**Worker** (from `capture-to-text/worker/`):
+```powershell
+.\mvnw.cmd spring-boot:run
 ```
-Started CaptureToTextApplication in X.XXX seconds
+```bash
+# macOS/Linux
+./mvnw spring-boot:run
 ```
-open **http://localhost:8080** in a browser.
+
+First run of each downloads Maven itself (via its own wrapper) plus
+dependencies — give it a minute. Once the API logs
+`Started CaptureToTextApplication in X.XXX seconds`, open
+**http://localhost:8080** in a browser. The worker has no HTTP endpoint
+(it's a plain Spring context with a `@KafkaListener`) — its equivalent
+"ready" line is `Started WorkerApplication in X.XXX seconds`.
 
 To just compile/package without running:
 ```powershell
 .\mvnw.cmd clean package
 java -jar target\capture-to-text-0.1.0.jar
 ```
+(same pattern in `worker/`, producing `capture-to-text-worker-0.1.0.jar`).
 
 ---
 
-## 3. Using the client
+## 4. Using the client
 
 - Drag an image onto the drop zone, click it to open a file picker, or
   paste (Ctrl/Cmd+V) a screenshot directly from your clipboard.
-- The extracted text appears in the textarea with the OCR confidence score;
-  click **Copy to clipboard** to grab it.
-- Past captures appear in the **History** list (newest first); click one to
-  reload its text into the textarea.
+- The upload returns immediately; the client shows "Processing..." while it
+  polls in the background, then the extracted text appears in the textarea
+  with the OCR confidence score once the worker finishes. Click
+  **Copy to clipboard** to grab it.
+- Past captures appear in the **History** list (newest first); a capture the
+  worker hasn't finished yet shows "(processing...)" with its status next to
+  the timestamp. Click a finished one to reload its text into the textarea.
 
 ---
 
@@ -118,13 +158,15 @@ java -jar target\capture-to-text-0.1.0.jar
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/captures` | Multipart upload, field name `image`. Runs OCR synchronously and saves the result. Returns the saved `Capture` (201). |
-| `GET` | `/api/captures` | Paginated list, newest first. Supports standard Spring pagination params: `?page=0&size=20&sort=createdAt,desc`. |
-| `GET` | `/api/captures/{id}` | Fetch a single capture by id (404 if not found). |
+| `POST` | `/api/captures` | Multipart upload, field name `image`. Uploads to MinIO, saves a `PENDING` `Capture`, publishes to Kafka, and returns immediately (202) — `extractedText`/`ocrConfidence` are `null` until the worker finishes. |
+| `GET` | `/api/captures` | Paginated list, newest first. Supports standard Spring pagination params: `?page=0&size=20&sort=createdAt,desc`. Each item's `status` is `PENDING`, `DONE`, or `FAILED`. |
+| `GET` | `/api/captures/{id}` | Fetch a single capture by id (404 if not found) — poll this until `status` leaves `PENDING`. |
 
 Error responses are JSON with `timestamp`, `status`, `error`, `message` —
-non-image uploads return `400`, OCR failures return `422`, missing ids
-return `404`, oversized uploads return `413`.
+non-image uploads return `400`, missing ids return `404`, oversized uploads
+return `413`. OCR failures no longer surface as an HTTP error status (the
+request already returned 202) — they land on the `Capture` itself as
+`status: "FAILED"` with an `errorMessage`.
 
 Example:
 ```bash
@@ -137,26 +179,41 @@ curl -X POST http://localhost:8080/api/captures -F "image=@screenshot.png"
 
 ```
 capture-to-text/
-├── mvnw, mvnw.cmd, .mvn/           # Maven Wrapper (no local Maven install needed)
-├── pom.xml
+├── docker-compose.yml               # local Kafka (KRaft) + MinIO
+├── mvnw, mvnw.cmd, .mvn/            # Maven Wrapper (API module)
+├── pom.xml                          # API module
 ├── src/main/java/com/capturetotext/app/
 │   ├── CaptureToTextApplication.java
 │   ├── controller/CaptureController.java
-│   ├── service/CaptureService.java   # orchestrates validation + OCR + persistence
-│   ├── service/OcrService.java       # Tess4J integration
-│   ├── service/OcrResult.java
+│   ├── service/CaptureService.java    # validation + MinIO upload + Kafka publish
+│   ├── service/ImageStorageService.java  # MinIO upload
+│   ├── config/MinioConfig.java
 │   ├── repository/CaptureRepository.java
-│   ├── model/Capture.java            # MongoDB @Document
-│   └── exception/                    # custom exceptions + @RestControllerAdvice
+│   ├── model/Capture.java, CaptureStatus.java   # MongoDB @Document
+│   └── exception/                     # custom exceptions + @RestControllerAdvice
 ├── src/main/resources/
 │   ├── application.properties
-│   └── static/index.html             # the entire client (vanilla HTML/JS)
-└── CONCEPTS.md                       # deep-dive explanations of every concept used here
+│   └── static/index.html              # the entire client (vanilla HTML/JS)
+│
+├── worker/                          # separate deployable — no HTTP, just a Kafka consumer
+│   ├── mvnw, mvnw.cmd, .mvn/         # its own Maven Wrapper
+│   ├── pom.xml
+│   └── src/main/java/com/capturetotext/worker/
+│       ├── WorkerApplication.java
+│       ├── listener/CaptureUploadListener.java   # @KafkaListener — the actual pipeline
+│       ├── service/OcrService.java, OcrResult.java   # Tess4J (moved from the API)
+│       ├── service/ImageStorageService.java          # MinIO download
+│       ├── config/MinioConfig.java
+│       ├── repository/CaptureRepository.java
+│       └── model/Capture.java, CaptureStatus.java    # own copy, same collection
+│
+└── CONCEPTS.md                      # deep-dive explanations of every concept used here
 ```
 
-## What's next (Phase 2, not built here)
+## What's next (Phase 2, remaining)
 
-- Move OCR off the request thread into an async worker (Kafka).
-- Separate worker service / horizontal scaling.
-- Browser extension for direct screen-region capture.
 - Auth / user accounts.
+- Packaging the API + worker themselves in Docker (currently only their
+  infra — Kafka/MinIO — runs in Docker; the JVM processes still run via
+  `mvnw spring-boot:run`).
+- Browser extension for direct screen-region capture.

@@ -1,0 +1,9 @@
+target/
+*.log
+app.pid.txt
+.idea/
+*.iml
+.vscode/
+.git/
+worker/
+Learning/

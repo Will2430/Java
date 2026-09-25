@@ -1,0 +1,58 @@
+# imagePullPolicy: Never is deliberate -- this image only exists in
+# minikube's local image cache (loaded via `minikube image load`), it was
+# never pushed to a registry. The default pull policy (IfNotPresent for a
+# tagged image, Always for :latest) would make kubelet try to pull
+# "capture-to-text-api:local" from Docker Hub and fail with ImagePullBackOff,
+# since no such repo exists there.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capture-api
+  labels:
+    app: capture-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: capture-api
+  template:
+    metadata:
+      labels:
+        app: capture-api
+    spec:
+      containers:
+        - name: capture-api
+          image: capture-to-text-api:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: capture-api-config
+            - secretRef:
+                name: capture-api-secrets
+          # readinessProbe gates whether the Service routes traffic to this
+          # pod at all; livenessProbe gates whether kubelet kills and
+          # restarts it. Both hit "/" since there's no dedicated /actuator
+          # health endpoint wired up yet (spring-boot-starter-actuator isn't
+          # a dependency) -- a real fintech setup would add Actuator and
+          # probe /actuator/health/{readiness,liveness} instead.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "384Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

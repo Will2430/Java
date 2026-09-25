@@ -28,9 +28,9 @@ public class CaptureController {
     }
 
     @PostMapping(consumes = "multipart/form-data")
-    @ResponseStatus(HttpStatus.CREATED)
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public Capture createCapture(@RequestParam("image") MultipartFile image) {
-        return captureService.processAndSave(image);
+        return captureService.submitForProcessing(image);
     }
 
     @GetMapping
