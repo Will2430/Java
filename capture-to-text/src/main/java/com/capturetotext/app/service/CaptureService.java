@@ -62,7 +62,10 @@ public class CaptureService {
         );
         Capture saved = captureRepository.save(capture);
 
-        kafkaTemplate.send(captureUploadsTopic, saved.getId());
+        // Key = id, not just a value: a null key makes the producer stick to one
+        // partition per batch, so a burst of uploads lands on 1-2 partitions and
+        // extra workers sit idle. Hashing the id spreads them evenly.
+        kafkaTemplate.send(captureUploadsTopic, saved.getId(), saved.getId());
 
         return saved;
     }

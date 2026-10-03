@@ -1,0 +1,18 @@
+# Apply the whole monitoring stack with:  kubectl apply -k k8s/monitoring
+# (-k = kustomize, built into kubectl). It's used here for two things plain
+# `apply -f` can't do: put everything in the `monitoring` namespace without
+# repeating it in every manifest, and build the dashboard ConfigMap straight
+# from the .json file so the dashboard stays a normal, diff-able JSON file
+# instead of being pasted into YAML.
+namespace: monitoring
+resources:
+  - namespace.yaml
+  - prometheus.yaml
+  - grafana.yaml
+  - kafka-exporter.yaml
+configMapGenerator:
+  - name: grafana-dashboards
+    files:
+      - dashboards/capture-to-text.json
+generatorOptions:
+  disableNameSuffixHash: true

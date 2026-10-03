@@ -5,13 +5,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project
 
 "Capture-to-text" OCR tool: upload/drag-drop/paste an image in a single-page
-vanilla HTML/JS client. Phase 2: OCR now runs asynchronously — a Spring Boot
+vanilla HTML/JS client. OCR runs asynchronously — a Spring Boot
 API accepts the upload, stores the image in MinIO, and publishes a job to
 Kafka; a separate worker process (own module, own JVM, no shared code with
 the API beyond duplicated entity classes) consumes it, runs Tess4J, and
 writes the result back to MongoDB. The client polls for completion. No auth
-yet; the API/worker JVM processes themselves aren't containerized (only
-their infra — Kafka, MinIO — runs in Docker via `docker-compose.yml`).
+yet. Both modules have a `Dockerfile` and run as Deployments on a local
+minikube cluster (`k8s/`); Kafka, MinIO and MongoDB stay on the host
+(docker-compose / Windows service) and Pods reach them via
+`host.minikube.internal`. Prometheus + Grafana (`k8s/monitoring/`) and a k6
+load-test Job (`k8s/loadtest/`) exist to observe it under traffic — see
+"Observability and load testing" below.
 
 ## Commands
 
@@ -66,10 +70,14 @@ partitions (`KAFKA_NUM_PARTITIONS` in the compose file — deliberately not
 1, so running two worker instances later actually demonstrates partition
 assignment instead of it being invisible).
 
-**No Tesseract install is required.** Tess4J's Maven artifact bundles native
-Tesseract/Leptonica binaries and `eng.traineddata` for Windows/Linux/macOS,
-extracted at runtime to a temp dir. Only `worker/` depends on Tess4J now —
-see the OcrService gotcha below before touching OCR setup code.
+**No Tesseract install is required on Windows** (the dev machine).
+Tess4J's Maven artifact bundles native Tesseract/Leptonica binaries for
+Windows, plus `eng.traineddata` for every OS, extracted at runtime to a temp
+dir. **It does not bundle Linux natives** — under a Linux container the
+worker dies with `UnsatisfiedLinkError: Unable to load library 'tesseract'`,
+which is why `worker/Dockerfile` apt-installs `libtesseract5`. Only `worker/`
+depends on Tess4J now — see the OcrService gotcha below before touching OCR
+setup code.
 
 ## Architecture
 
@@ -113,9 +121,12 @@ CaptureController (HTTP/JSON concerns only)
   avoid needing any CORS configuration. If the client is ever split out to
   a separately-hosted static site, CORS config will need to be added.
 
-**Worker module** (`worker/`, `com.capturetotext.worker`) — a plain Spring
-context, no `spring-boot-starter-web`, so no HTTP port and no controller
-layer at all; its entire job is one `@KafkaListener`:
+**Worker module** (`worker/`, `com.capturetotext.worker`) — no controller
+layer and no business endpoints; its entire job is one `@KafkaListener`. It
+does run a web server on port 8081, but only as an ops surface
+(`/actuator/health/*` for k8s probes, `/actuator/prometheus` for scraping) —
+Prometheus pulls over HTTP, so a worker with no HTTP server can't be
+monitored:
 
 ```
 CaptureUploadListener (@KafkaListener on "capture-uploads", group "ocr-workers")
@@ -223,6 +234,51 @@ could not be established` in the pod's logs, not an exception anywhere
 visible in the API's own error handling (see the note above on why).
 `k8s/configmap.yaml`'s `SPRING_KAFKA_BOOTSTRAP_SERVERS` must point at
 `host.minikube.internal:29092`, not `:9092`, for this reason.
+
+## Observability and load testing (`k8s/monitoring/`, `k8s/loadtest/`)
+
+```powershell
+kubectl apply -f k8s/                      # api (3 replicas), worker, services, config
+kubectl apply -k k8s/monitoring            # Prometheus + Grafana + kafka-exporter (ns: monitoring)
+kubectl -n monitoring port-forward svc/grafana 3000:3000     # http://localhost:3000, no login
+kubectl delete job k6-loadtest --ignore-not-found; kubectl apply -k k8s/loadtest
+kubectl logs -f job/k6-loadtest
+```
+
+Non-obvious things learned the hard way while building this — don't undo:
+
+- **Load must run inside the cluster.** `kubectl port-forward svc/...` tunnels
+  to one Pod and stays there, so it can't show load balancing. The k6 Job
+  hits `http://capture-api:8080` (the Service DNS name) so traffic goes through
+  kube-proxy. k6 also sets `noConnectionReuse: true`: kube-proxy picks a
+  backend per *connection*, so keep-alive clients pin to one Pod (measured: 15
+  requests on one connection → 1 Pod; 15 new connections → 7/2/6 across three).
+- **`X-Served-By`** (`ServedByFilter`) stamps every API response with the Pod
+  name (`HOSTNAME`), the only client-side way to see which replica answered.
+- **Kafka messages are keyed by capture id.** With a null key the producer
+  batches to one "sticky" partition at a time; a 359-upload burst landed
+  118 / 241 / 0 across the three partitions, so extra workers would have sat
+  idle. The worker ConfigMap also sets `APP_KAFKA_LISTENER_CONCURRENCY=1`: with
+  the default 3 threads a single pod owns all 3 partitions and other pods idle.
+- **Worker "Ready" ≠ worker consuming.** The Linux-native Tesseract failure
+  killed each Kafka listener container while the pod stayed `1/1 Ready` (the
+  probes only check the HTTP server). Detect it from the *broker's* view:
+  the client's own `kafka_consumer_*` lag series vanish when the consumer dies,
+  so the dashboard computes backlog as `sum(topic latest offset) −
+  sum(clamp_min(group committed offset, 0))` from kafka-exporter. Don't use
+  `kafka_consumergroup_lag` directly: it reports `-1` for partitions the group
+  has never committed to, under-counting a fresh backlog.
+- **Committed lag is coarse.** Spring Kafka commits once per polled batch, so
+  with ~120 queued messages per partition the backlog reads flat until a whole
+  batch finishes, then drops. Jobs/sec and avg OCR time (from the
+  `spring_kafka_listener_seconds_*` timer) are the fine-grained signals. It also
+  means a worker crash redelivers up to a whole batch (`max.poll.records`=500).
+- minikube's default 4 GB / 2 CPU node is too small for this stack; raised live
+  with `docker update --memory 5g --memory-swap 5g --cpus 6 minikube`
+  (doesn't survive `minikube delete`).
+- Load-test uploads are named `loadtest.png`; remove them with
+  `db.captures.deleteMany({ sourceFilename: "loadtest.png" })`. Their MinIO
+  objects are not cleaned up.
 
 ## Reference docs in this repo
 

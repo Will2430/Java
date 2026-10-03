@@ -166,6 +166,32 @@ achieved either by:
 2. **`concurrency` on a single `@KafkaListener`**, which spins up N internal
    consumer threads inside *one* JVM, each claiming a partition.
 
+
+- So the idea is each partition can be owned by multiple consumer groups, consisting of multiple kafka consumer threads (which is its own threads within the JVM, under Kafka ), and at any given moment a partition can be consumed by only one thread from each consumer group, and processsing through the partition sequentially.
+
+-  Consumer groups are used because we want to create independent consumers for the **same event stream**, e.g. the billing and email services both requires the same order information for their own further processing
+
+- Note that each consumer group can consist of **independent working process**, each with multiple kafka threads and each of those threads can be assigned to different partitions OR each process having a single kafka thread. e.g. :
+
+        Consumer Group A
+      │
+      └── Process / JVM 1
+          │
+          ├── Consumer Thread 1 → Partition 0
+          ├── Consumer Thread 2 → Partition 1
+          └── Consumer Thread 3 → Partition 2
+
+      Consumer Group A
+      │
+      ├── Process 1
+      │   └── Consumer Thread 1 → Partition 0
+      │
+      ├── Process 2
+      │   └── Consumer Thread 2 → Partition 1
+      │
+      └── Process 3
+          └── Consumer Thread 3 → Partition 2
+
 For pure CPU-bound throughput on one machine, these two options have the
 **same ceiling** — the OS scheduler puts runnable threads on cores
 regardless of which process they belong to. What actually differs between

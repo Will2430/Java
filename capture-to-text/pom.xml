@@ -57,6 +57,19 @@
             <version>${minio.version}</version>
         </dependency>
 
+        <!-- /actuator/health/{liveness,readiness} for k8s probes, plus the
+             Micrometer Prometheus registry that renders every metric
+             (http_server_requests, jvm_*, kafka producer) at
+             /actuator/prometheus for Prometheus to scrape. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>

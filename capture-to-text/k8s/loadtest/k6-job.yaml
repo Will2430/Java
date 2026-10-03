@@ -1,0 +1,47 @@
+# A one-shot load generator running INSIDE the cluster. A Job (not a
+# Deployment) because it should run to completion and stop, not be restarted.
+#
+# Jobs are immutable once created, so to re-run:
+#   kubectl delete job k6-loadtest --ignore-not-found
+#   kubectl apply -k k8s/loadtest
+#   kubectl logs -f job/k6-loadtest
+# Override the load without editing the script:  add/edit the env block below.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-loadtest
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: k6-loadtest
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:0.55.0
+          args: ["run", "/scripts/k6-script.js"]
+          env:
+            - name: BASE_URL
+              value: "http://capture-api:8080"
+            - name: DURATION
+              value: "90s"
+            - name: BROWSE_RATE
+              value: "20"
+            - name: UPLOAD_RATE
+              value: "4"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-loadtest-scripts

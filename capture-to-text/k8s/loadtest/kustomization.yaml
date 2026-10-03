@@ -1,0 +1,12 @@
+# Bundles the script + sample image into the ConfigMap the Job mounts at
+# /scripts. Kustomize only reads files inside its own directory, which is why
+# the script and PNG live here rather than in a top-level loadtest/ folder.
+resources:
+  - k6-job.yaml
+configMapGenerator:
+  - name: k6-loadtest-scripts
+    files:
+      - k6-script.js
+      - loadtest.png
+generatorOptions:
+  disableNameSuffixHash: true

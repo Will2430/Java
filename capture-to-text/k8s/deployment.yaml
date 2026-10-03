@@ -11,7 +11,11 @@ metadata:
   labels:
     app: capture-api
 spec:
-  replicas: 1
+  # Three replicas so kube-proxy has something to balance across; the API is
+  # stateless (all state lives in Mongo/MinIO/Kafka), which is what makes
+  # this safe. If an HPA is ever attached, delete this line -- otherwise every
+  # `kubectl apply` resets whatever count the autoscaler chose.
+  replicas: 3
   selector:
     matchLabels:
       app: capture-api
@@ -19,6 +23,12 @@ spec:
     metadata:
       labels:
         app: capture-api
+      # Prometheus discovers scrape targets from these pod annotations (see
+      # monitoring/prometheus.yaml) -- no per-service scrape config to maintain.
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
     spec:
       containers:
         - name: capture-api
@@ -33,19 +43,19 @@ spec:
                 name: capture-api-secrets
           # readinessProbe gates whether the Service routes traffic to this
           # pod at all; livenessProbe gates whether kubelet kills and
-          # restarts it. Both hit "/" since there's no dedicated /actuator
-          # health endpoint wired up yet (spring-boot-starter-actuator isn't
-          # a dependency) -- a real fintech setup would add Actuator and
-          # probe /actuator/health/{readiness,liveness} instead.
+          # restarts it. Actuator exposes them as separate endpoints so the
+          # two questions can diverge (e.g. Spring flips readiness to
+          # OUT_OF_SERVICE while draining on shutdown, without failing
+          # liveness and triggering a pointless restart).
           readinessProbe:
             httpGet:
-              path: /
+              path: /actuator/health/readiness
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /
+              path: /actuator/health/liveness
               port: 8080
             initialDelaySeconds: 20
             periodSeconds: 10

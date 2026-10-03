@@ -1,0 +1,41 @@
+# Broker-side consumer-lag metrics. The worker's own kafka_consumer_* metrics
+# are client-side: if the consumer dies (or its container stops after a fatal
+# error) those series simply vanish, so a lag panel built on them reads "no
+# data / 0" exactly when messages are piling up unread. This exporter asks the
+# *broker* how far each consumer group is behind, which keeps working when
+# every consumer is dead.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-exporter
+  labels:
+    app: kafka-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-exporter
+  template:
+    metadata:
+      labels:
+        app: kafka-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9308"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: kafka-exporter
+          image: danielqsj/kafka-exporter:v1.8.0
+          # 29092: the Pod-facing listener (see docker-compose.yml).
+          args:
+            - --kafka.server=host.minikube.internal:29092
+          ports:
+            - containerPort: 9308
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"

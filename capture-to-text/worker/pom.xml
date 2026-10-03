@@ -24,12 +24,22 @@
     </properties>
 
     <dependencies>
-        <!-- Plain Spring context: this process has no HTTP endpoints, only a
-             @KafkaListener bean, so spring-boot-starter-web is deliberately
-             NOT a dependency here. -->
+        <!-- No business HTTP endpoints: the only "controller" is a
+             @KafkaListener. spring-boot-starter-web is here purely so the
+             process has an ops surface (/actuator/health for k8s probes,
+             /actuator/prometheus for scraping). Prometheus pulls metrics
+             over HTTP, so a worker with no HTTP server can't be monitored. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter</artifactId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
         <dependency>

@@ -41,7 +41,7 @@ public class CaptureUploadListener {
         this.ocrService = ocrService;
     }
 
-    @KafkaListener(topics = "${app.kafka.capture-uploads-topic}", groupId = "${spring.kafka.consumer.group-id}", concurrency = "3")
+    @KafkaListener(topics = "${app.kafka.capture-uploads-topic}", groupId = "${spring.kafka.consumer.group-id}", concurrency = "${app.kafka.listener-concurrency}")
     public void handleUpload(String captureId) {
         Optional<Capture> maybeCapture = captureRepository.findById(captureId);
         if (maybeCapture.isEmpty()) {

@@ -1,0 +1,71 @@
+# The OCR worker as a Deployment. No Service: nothing calls a worker -- it
+# pulls jobs from Kafka -- so there is no stable address to put in front of it.
+# (Prometheus reaches each pod directly via the scrape annotations below.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: capture-worker-config
+data:
+  SPRING_DATA_MONGODB_URI: "mongodb://host.minikube.internal:27017/capturetotext"
+  # 29092, the Pod-facing Kafka listener (see docker-compose.yml).
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "host.minikube.internal:29092"
+  MINIO_ENDPOINT: "http://host.minikube.internal:9000"
+  # One consumer thread per pod: the topic has 3 partitions, so 3 pods x 1
+  # thread keeps every partition busy and lets scaling pods scale throughput.
+  # The default of 3 threads would let a single pod hog all 3 partitions and
+  # leave every other pod idle.
+  APP_KAFKA_LISTENER_CONCURRENCY: "1"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capture-worker
+  labels:
+    app: capture-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: capture-worker
+  template:
+    metadata:
+      labels:
+        app: capture-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      containers:
+        - name: capture-worker
+          image: capture-to-text-worker:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: capture-worker-config
+            # Shared MinIO credentials -- same secret the API uses.
+            - secretRef:
+                name: capture-api-secrets
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          # OCR is CPU- and memory-hungry (Tesseract + image decode), so the
+          # worker gets a bigger envelope than the API.
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "768Mi"

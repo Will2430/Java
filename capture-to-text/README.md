@@ -4,9 +4,11 @@ Upload or drag-drop an image; OCR (Tesseract, via Tess4J) runs asynchronously
 in a separate worker process, decoupled from the upload request by Kafka.
 Every capture is saved to MongoDB so you can browse history, and image bytes
 live in MinIO (S3-compatible) so the worker can reach them from its own
-process. The API module is containerized and deployable to a local
-Kubernetes cluster (minikube); the worker currently still runs as a plain
-process (see [Project layout](#project-layout) / [Known limitations](#known-limitations)).
+process. Both the API and the worker are containerized and deployable to a
+local Kubernetes cluster (minikube), with Prometheus + Grafana for
+monitoring and a k6 load generator for putting the cluster under traffic
+(see [step 4](#4-optional-deploy-to-kubernetes-monitor-and-load-test) and
+[Known limitations](#known-limitations)).
 
 **Architecture:**
 ```
@@ -15,10 +17,10 @@ Browser (static HTML/JS)
       → Kafka topic "capture-uploads"
           → Worker → Tess4J (OCR) → MongoDB (result)
 ```
-The API runs either as a plain `mvnw spring-boot:run` process or as a
-Kubernetes Deployment (`k8s/`) — same code, same image, different host for
-reaching Mongo/Kafka/MinIO (`localhost` locally, `host.minikube.internal`
-from inside a Pod). The worker only runs as a plain process today.
+Each module runs either as a plain `mvnw spring-boot:run` process or as a
+Kubernetes Deployment (`k8s/`) — same code, different host for reaching
+Mongo/Kafka/MinIO (`localhost` locally, `host.minikube.internal` from inside
+a Pod).
 
 The API returns `202 Accepted` immediately; the client polls
 `GET /api/captures/{id}` until `status` leaves `PENDING`. No auth yet.
@@ -34,18 +36,21 @@ The API returns `202 Accepted` immediately; the client polls
 | Docker (with Compose) | any recent version | Yes — runs Kafka + MinIO locally, and builds the API's image |
 | Maven | **not required** — the bundled Maven Wrapper (`mvnw` / `mvnw.cmd`) downloads Maven 3.9.9 automatically on first run | No |
 | Tesseract OCR | **not required as a separate install on Windows/Linux/macOS** — see note below | No |
-| minikube + `kubectl` | tested with minikube v1.39.0, Kubernetes v1.37.0 | Only if deploying the API to Kubernetes — see [step 4](#4-optional-deploy-the-api-to-kubernetes) |
+| minikube + `kubectl` | tested with minikube v1.39.0, Kubernetes v1.37.0 | Only if deploying to Kubernetes — see [step 4](#4-optional-deploy-to-kubernetes-monitor-and-load-test) |
 
 ### About Tesseract / Tess4J
 
 This project uses [Tess4J](https://github.com/nguyenq/tess4j), a JNA wrapper
 around the native Tesseract + Leptonica libraries. Tess4J's Maven artifact
-**bundles the native binaries and the English (`eng`) language data** for
-Windows, Linux, and macOS, and `worker/`'s `OcrService` extracts them to a
-temp directory at startup (`LoadLibs.extractTessResources("tessdata")`). You
-do **not** need to install Tesseract separately or download
-`eng.traineddata` yourself. Only the worker needs this — the API module
-doesn't run OCR anymore.
+**bundles the native binaries for Windows** and the English (`eng`) language
+data for every OS, and `worker/`'s `OcrService` extracts the language data to
+a temp directory at startup (`LoadLibs.extractTessResources("tessdata")`). On
+Windows you do **not** need to install Tesseract separately or download
+`eng.traineddata` yourself. **Linux natives are not bundled**, so the worker's
+Docker image installs `libtesseract5` from apt (see `worker/Dockerfile`) —
+skip that and the container fails at the first job with `UnsatisfiedLinkError:
+Unable to load library 'tesseract'`. Only the worker needs this — the API
+module doesn't run OCR anymore.
 
 The one native dependency Windows needs is the **Microsoft Visual C++ 2019
 Redistributable (x64)** — Tesseract 5.x's Windows binaries are built against
@@ -108,7 +113,7 @@ publish with 3 partitions (see `docker-compose.yml`).
 Kafka exposes **two listeners**: `localhost:9092` for processes running
 directly on the host (the API/worker via `mvnw`), and `localhost:29092`
 (advertised inside the cluster as `host.minikube.internal:29092`) for a
-Pod running the containerized API — see [step 4](#4-optional-deploy-the-api-to-kubernetes).
+Pod running the containerized API — see [step 4](#4-optional-deploy-to-kubernetes-monitor-and-load-test).
 Local `mvnw` runs only ever need `9092`.
 
 ---
@@ -152,26 +157,32 @@ java -jar target\capture-to-text-0.1.0.jar
 
 ---
 
-## 4. (Optional) Deploy the API to Kubernetes
+## 4. (Optional) Deploy to Kubernetes, monitor, and load-test
 
-The API module can run as a Kubernetes Deployment instead of a plain
-process — the worker still needs to run locally either way (it isn't
-containerized yet).
+Both modules can run as Kubernetes Deployments instead of plain processes
+(don't run the `mvnw` worker at the same time — it would just be one more
+consumer in the group). Mongo, Kafka and MinIO stay on the host from
+steps 1-2.
 
 ```powershell
-# Start the cluster
+# Start the cluster. minikube's default 4 GB / 2 CPU node is too small for
+# this stack (3 API + workers + Prometheus + Grafana), so raise it in place:
 minikube start --driver=docker
+docker update --memory 5g --memory-swap 5g --cpus 6 minikube
+minikube addons enable metrics-server        # for `kubectl top`
 
-# Build the image and load it into minikube's own container runtime
+# Build both images and load them into minikube's own container runtime
 # (separate from Docker Desktop's image store — a build alone isn't enough)
 docker build -t capture-to-text-api:local .
+docker build -t capture-to-text-worker:local worker/
 minikube image load capture-to-text-api:local
+minikube image load capture-to-text-worker:local
 
-# Apply the manifests (Deployment, Service, ConfigMap, Secret)
+# Apply the manifests (API x3, worker, Service, ConfigMaps, Secret)
 kubectl apply -f k8s/
 
 # Verify
-kubectl get pods -l app=capture-api      # expect 1/1 Running
+kubectl get pods                         # expect 3x capture-api + 1x capture-worker, all 1/1
 kubectl port-forward svc/capture-api 8080:8080
 # then open http://localhost:8080
 ```
@@ -182,6 +193,39 @@ terminal open as a tunnel for the life of the connection, which
 `port-forward` doesn't need. See `k8s/configmap.yaml` for how the Pod
 reaches Mongo/Kafka/MinIO on the host (`host.minikube.internal`, not
 `localhost` — inside a Pod, `localhost` means the Pod itself).
+
+### Monitoring: Prometheus + Grafana
+
+```powershell
+kubectl apply -k k8s/monitoring                          # namespace: monitoring
+kubectl -n monitoring port-forward svc/grafana 3000:3000
+# open http://localhost:3000  ->  Dashboards -> capture-to-text  (no login)
+```
+
+Prometheus discovers scrape targets from pod annotations, so a new replica is
+picked up the moment it exists. The dashboard shows requests/sec per API Pod
+(the load-balancing spread), p95 latency per route, Kafka backlog per
+partition, OCR jobs/sec per worker and average OCR time, CPU and heap per Pod.
+Quick checks without Grafana: `kubectl top pods`, or
+`kubectl -n monitoring port-forward svc/prometheus 9090:9090` for raw queries.
+
+### Load testing: k6 inside the cluster
+
+```powershell
+kubectl delete job k6-loadtest --ignore-not-found        # Jobs are immutable: re-create to re-run
+kubectl apply -k k8s/loadtest                            # 20 reads/s + 4 uploads/s for 90 s
+kubectl logs -f job/k6-loadtest
+
+# things to try while it runs, with the Grafana dashboard open:
+kubectl scale deploy/capture-worker --replicas=3         # 3 pods x 1 thread = 3 partitions; watch backlog drain
+kubectl delete pod <one-capture-api-pod-name>            # kill ONE Pod mid-test; the ReplicaSet replaces it, k6 sees ~no errors
+```
+
+The load generator runs *inside* the cluster on purpose: `kubectl
+port-forward` pins to one Pod, so only in-cluster traffic exercises kube-proxy.
+Every API response carries an `X-Served-By: <pod name>` header to see which
+replica answered. Uploads are named `loadtest.png`; remove the test rows with
+`db.captures.deleteMany({ sourceFilename: "loadtest.png" })`.
 
 ---
 
@@ -226,7 +270,9 @@ curl -X POST http://localhost:8080/api/captures -F "image=@screenshot.png"
 capture-to-text/
 ├── docker-compose.yml               # local Kafka (KRaft, dual listeners) + MinIO
 ├── Dockerfile, .dockerignore        # multi-stage build for the API module
-├── k8s/                             # Deployment, Service, ConfigMap, Secret
+├── k8s/                             # API + worker Deployments, Service, ConfigMaps, Secret
+│   ├── monitoring/                  # Prometheus, Grafana (+ provisioned dashboard), kafka-exporter
+│   └── loadtest/                    # k6 Job, script, sample image
 ├── mvnw, mvnw.cmd, .mvn/            # Maven Wrapper (API module)
 ├── pom.xml                          # API module
 ├── src/main/java/com/capturetotext/app/
@@ -242,7 +288,8 @@ capture-to-text/
 │   ├── application.properties
 │   └── static/index.html              # the entire client (vanilla HTML/JS)
 │
-├── worker/                          # separate deployable — no HTTP, just a Kafka consumer
+├── worker/                          # separate deployable — a Kafka consumer (HTTP only for health/metrics)
+│   ├── Dockerfile                    # installs libtesseract5 (Tess4J has no Linux natives)
 │   ├── mvnw, mvnw.cmd, .mvn/         # its own Maven Wrapper
 │   ├── pom.xml
 │   └── src/main/java/com/capturetotext/worker/
@@ -261,9 +308,13 @@ capture-to-text/
 ## Known limitations
 
 - **No auth.** Anyone reaching the API can upload and browse all captures.
-- **The worker isn't containerized or deployed to Kubernetes.** It still
-  runs as a plain `mvnw spring-boot:run` process — the API is the only
-  module with a `Dockerfile`/k8s manifests today.
+- **A worker Pod can be "Ready" while consuming nothing.** Its probes only
+  check the HTTP server, not the Kafka listener container — if the listener
+  dies (this happened when the Linux Tesseract library was missing) the Pod
+  stays `1/1 Ready` and uploads sit `PENDING`. The dashboard's Kafka backlog
+  and OCR jobs/sec panels are what expose it.
+- **No autoscaling.** Replica counts are set by hand (`kubectl scale`); there's
+  no HorizontalPodAutoscaler yet.
 - **No cancel or timeout.** A `Capture` that never gets picked up (e.g. a
   Kafka publish that silently fails) stays `PENDING` forever — there's no
   cancel endpoint and no expiry sweep.
@@ -273,5 +324,8 @@ capture-to-text/
 - **Single MongoDB instance, single Kafka broker.** No replication or
   failover — see `CLAUDE.md` for what each of these would need to survive
   real production traffic.
+- **Monitoring endpoints are unauthenticated** (`/actuator/prometheus`,
+  Grafana runs with anonymous Admin) — fine on a local cluster reached only via
+  `port-forward`, not for anything shared.
 - Not yet built: browser extension for direct screen-region capture, Helm
   chart, Ingress/TLS in front of the k8s Service.
