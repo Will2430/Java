@@ -1,6 +1,7 @@
 package com.capturetotext.app.model;
 
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
@@ -10,6 +11,10 @@ public class Capture {
 
     @Id
     private String id;
+    // Keycloak user id ("sub" claim) of the uploader. Every query filters on it, so one user
+    // can never read another's captures. Indexed because every list/get looks it up.
+    @Indexed
+    private String ownerId;
     private CaptureStatus status;
     private String imageObjectKey;
     private String extractedText;
@@ -17,11 +22,15 @@ public class Capture {
     private String sourceFilename;
     private Double ocrConfidence;
     private String errorMessage;
+    // Bill total the worker spotted in the OCR text (in cents); null if none found. Only a suggestion: the user confirms it.
+    private Long suggestedAmountCents;
 
     public Capture() {
     }
 
-    public Capture(CaptureStatus status, String imageObjectKey, Instant createdAt, String sourceFilename) {
+    public Capture(String ownerId, CaptureStatus status, String imageObjectKey, Instant createdAt,
+                   String sourceFilename) {
+        this.ownerId = ownerId;
         this.status = status;
         this.imageObjectKey = imageObjectKey;
         this.createdAt = createdAt;
@@ -34,6 +43,10 @@ public class Capture {
 
     public void setId(String id) {
         this.id = id;
+    }
+
+    public String getOwnerId() {
+        return ownerId;
     }
 
     public CaptureStatus getStatus() {
@@ -90,5 +103,13 @@ public class Capture {
 
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
+    }
+
+    public Long getSuggestedAmountCents() {
+        return suggestedAmountCents;
+    }
+
+    public void setSuggestedAmountCents(Long suggestedAmountCents) {
+        this.suggestedAmountCents = suggestedAmountCents;
     }
 }

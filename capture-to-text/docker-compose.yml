@@ -47,5 +47,32 @@ services:
     volumes:
       - minio-data:/data
 
+  # Login server (OpenID Connect). Issues the JWT access tokens the API checks.
+  # Admin console: http://localhost:8180/admin (admin / admin). Users and clients come
+  # from config/keycloak/capture-to-text-realm.json, imported on first start.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    container_name: capture-keycloak
+    command: start-dev --import-realm
+    ports:
+      - "8180:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Fixes the "iss" claim to http://localhost:8180/realms/... no matter which hostname a
+      # client used (a Pod reaches it as host.minikube.internal), so the API's issuer check
+      # always matches.
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    volumes:
+      - ./config/keycloak:/opt/keycloak/data/import:ro
+
+  # Rate limiter state: one token bucket per user, shared by every API instance.
+  redis:
+    image: redis:7-alpine
+    container_name: capture-redis
+    ports:
+      - "6379:6379"
+
 volumes:
   minio-data:

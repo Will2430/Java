@@ -42,15 +42,34 @@ export const options = {
   },
 };
 
-export function browse() {
-  const res = http.get(`${BASE}/api/captures?size=5`);
+// Keycloak on the host (docker-compose), reached from inside the cluster.
+const KEYCLOAK = __ENV.KEYCLOAK_URL || 'http://host.minikube.internal:8180';
+
+// Runs once before the scenarios: log in as the "loadtest" user with the password grant
+// (enabled only on the capture-to-text-loadtest client; the browser uses the redirect flow).
+// The token lives 5 minutes, longer than the default 90s run.
+export function setup() {
+  const res = http.post(`${KEYCLOAK}/realms/capture-to-text/protocol/openid-connect/token`, {
+    grant_type: 'password',
+    client_id: 'capture-to-text-loadtest',
+    username: __ENV.LOADTEST_USER || 'loadtest',
+    password: __ENV.LOADTEST_PASSWORD || 'loadtest',
+  });
+  if (!check(res, { 'login 200': (r) => r.status === 200 })) {
+    throw new Error(`Keycloak login failed: ${res.status} ${res.body}`);
+  }
+  return { headers: { Authorization: `Bearer ${res.json('access_token')}` } };
+}
+
+export function browse(auth) {
+  const res = http.get(`${BASE}/api/captures?size=5`, { headers: auth.headers });
   check(res, { 'browse 200': (r) => r.status === 200 });
 }
 
-export function upload() {
+export function upload(auth) {
   const res = http.post(`${BASE}/api/captures`, {
     image: http.file(image, 'loadtest.png', 'image/png'),
-  });
+  }, { headers: auth.headers });
   // 202 Accepted: the API only promises the job was queued, not that OCR is done.
   check(res, { 'upload 202': (r) => r.status === 202 });
 }

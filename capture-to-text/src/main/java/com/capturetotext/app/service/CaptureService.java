@@ -43,7 +43,7 @@ public class CaptureService {
      * extractedText/ocrConfidence are null until the worker finishes and
      * flips status to DONE (see CaptureController's 202 response).
      */
-    public Capture submitForProcessing(MultipartFile file) {
+    public Capture submitForProcessing(MultipartFile file, String ownerId) {
         if (file.isEmpty()) {
             throw new InvalidImageException("Uploaded file is empty.");
         }
@@ -55,6 +55,7 @@ public class CaptureService {
         String objectKey = imageStorageService.upload(file);
 
         Capture capture = new Capture(
+                ownerId,
                 CaptureStatus.PENDING,
                 objectKey,
                 Instant.now(),
@@ -70,11 +71,12 @@ public class CaptureService {
         return saved;
     }
 
-    public Page<Capture> listCaptures(Pageable pageable) {
-        return captureRepository.findAll(pageable);
+    public Page<Capture> listCaptures(String ownerId, Pageable pageable) {
+        return captureRepository.findByOwnerId(ownerId, pageable);
     }
 
-    public Optional<Capture> getCapture(String id) {
-        return captureRepository.findById(id);
+    // Someone else's capture looks exactly like a missing one (404), so ids can't be probed.
+    public Optional<Capture> getCapture(String id, String ownerId) {
+        return captureRepository.findByIdAndOwnerId(id, ownerId);
     }
 }

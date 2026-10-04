@@ -5,3 +5,8 @@ app.pid.txt
 *.iml
 .vscode/
 .DS_Store
+config/secrets.properties
+
+# React client (frontend/): deps, the Node that frontend-maven-plugin downloads
+frontend/node_modules/
+frontend/node/

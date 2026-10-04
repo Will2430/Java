@@ -11,11 +11,8 @@ metadata:
   labels:
     app: capture-api
 spec:
-  # Three replicas so kube-proxy has something to balance across; the API is
-  # stateless (all state lives in Mongo/MinIO/Kafka), which is what makes
-  # this safe. If an HPA is ever attached, delete this line -- otherwise every
-  # `kubectl apply` resets whatever count the autoscaler chose.
-  replicas: 3
+  # No `replicas:` on purpose: hpa.yaml owns the count (1-5 Pods by CPU). A value
+  # here would reset the autoscaler's choice on every `kubectl apply`.
   selector:
     matchLabels:
       app: capture-api
@@ -41,6 +38,11 @@ spec:
                 name: capture-api-config
             - secretRef:
                 name: capture-api-secrets
+            # STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET. Created by command, never committed
+            # (see README). Optional, so the API still starts without payments configured.
+            - secretRef:
+                name: capture-api-stripe
+                optional: true
           # readinessProbe gates whether the Service routes traffic to this
           # pod at all; livenessProbe gates whether kubelet kills and
           # restarts it. Actuator exposes them as separate endpoints so the

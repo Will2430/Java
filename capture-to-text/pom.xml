@@ -20,6 +20,7 @@
     <properties>
         <java.version>17</java.version>
         <minio.version>8.5.17</minio.version>
+        <stripe.version>34.0.0</stripe.version>
     </properties>
 
     <dependencies>
@@ -57,6 +58,27 @@
             <version>${minio.version}</version>
         </dependency>
 
+        <!-- Stripe API client: creates hosted Checkout Sessions and verifies
+             webhook signatures. Card data never reaches this server. -->
+        <dependency>
+            <groupId>com.stripe</groupId>
+            <artifactId>stripe-java</artifactId>
+            <version>${stripe.version}</version>
+        </dependency>
+
+        <!-- Validates the JWT access tokens Keycloak issues (signature, expiry, issuer,
+             audience). The API is a "resource server": it never sees passwords or logins. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+
+        <!-- Redis holds the rate limiter's token buckets, shared by every API Pod. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
         <!-- /actuator/health/{liveness,readiness} for k8s probes, plus the
              Micrometer Prometheus registry that renders every metric
              (http_server_requests, jvm_*, kafka producer) at
@@ -80,6 +102,29 @@
             <artifactId>spring-kafka-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Integration tests against real Mongo and Kafka in throwaway Docker containers.
+             Versions come from Spring Boot's dependency management. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mongodb</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -87,6 +132,35 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!-- Builds the React client (frontend/) into target/classes/static, so the jar
+                 serves it at "/" like any static resource. Downloads its own Node into
+                 frontend/node/, so the build machine (or Docker image) needs no Node install.
+                 Skip it while iterating on Java only: -Dskip.npm -Dskip.installnodenpm -->
+            <plugin>
+                <groupId>com.github.eirslett</groupId>
+                <artifactId>frontend-maven-plugin</artifactId>
+                <version>2.0.2</version>
+                <configuration>
+                    <workingDirectory>frontend</workingDirectory>
+                    <nodeVersion>v22.20.0</nodeVersion>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>install-node-and-npm</id>
+                        <goals><goal>install-node-and-npm</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>npm-ci</id>
+                        <goals><goal>npm</goal></goals>
+                        <configuration><arguments>ci</arguments></configuration>
+                    </execution>
+                    <execution>
+                        <id>npm-build</id>
+                        <goals><goal>npm</goal></goals>
+                        <configuration><arguments>run build</arguments></configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

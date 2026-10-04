@@ -18,3 +18,16 @@ data:
   # Pod means the Pod itself, not the Kafka container.
   SPRING_KAFKA_BOOTSTRAP_SERVERS: "host.minikube.internal:29092"
   MINIO_ENDPOINT: "http://host.minikube.internal:9000"
+  # Stripe sends the user back here after checkout; reached via kubectl port-forward locally.
+  APP_PUBLIC_BASE_URL: "http://localhost:8080"
+  # Keycloak's public keys, fetched from inside the Pod. The expected issuer stays
+  # http://localhost:8180/... (application.properties): that's where the browser logged in,
+  # and KC_HOSTNAME pins every token's "iss" to it.
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: "http://host.minikube.internal:8180/realms/capture-to-text/protocol/openid-connect/certs"
+  # Rate limiter buckets, shared by every API Pod.
+  SPRING_DATA_REDIS_HOST: "host.minikube.internal"
+  # The k6 Job is a single user sending ~24 req/s. A per-user limit sized for a human would
+  # turn the load test into a rate-limit test, so the general bucket is effectively unlimited
+  # here. Delete these two lines to watch 429s under load instead.
+  APP_RATE_LIMIT_API_CAPACITY: "100000"
+  APP_RATE_LIMIT_API_REFILL_PER_MINUTE: "100000"

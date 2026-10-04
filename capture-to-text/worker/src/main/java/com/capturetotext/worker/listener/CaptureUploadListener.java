@@ -3,6 +3,7 @@ package com.capturetotext.worker.listener;
 import com.capturetotext.worker.model.Capture;
 import com.capturetotext.worker.model.CaptureStatus;
 import com.capturetotext.worker.repository.CaptureRepository;
+import com.capturetotext.worker.service.BillAmountExtractor;
 import com.capturetotext.worker.service.ImageStorageService;
 import com.capturetotext.worker.service.OcrResult;
 import com.capturetotext.worker.service.OcrService;
@@ -32,13 +33,16 @@ public class CaptureUploadListener {
     private final CaptureRepository captureRepository;
     private final ImageStorageService imageStorageService;
     private final OcrService ocrService;
+    private final BillAmountExtractor billAmountExtractor;
 
     public CaptureUploadListener(CaptureRepository captureRepository,
                                   ImageStorageService imageStorageService,
-                                  OcrService ocrService) {
+                                  OcrService ocrService,
+                                  BillAmountExtractor billAmountExtractor) {
         this.captureRepository = captureRepository;
         this.imageStorageService = imageStorageService;
         this.ocrService = ocrService;
+        this.billAmountExtractor = billAmountExtractor;
     }
 
     @KafkaListener(topics = "${app.kafka.capture-uploads-topic}", groupId = "${spring.kafka.consumer.group-id}", concurrency = "${app.kafka.listener-concurrency}")
@@ -57,6 +61,7 @@ public class CaptureUploadListener {
             OcrResult result = ocrService.extractText(tempFile);
             capture.setExtractedText(result.text());
             capture.setOcrConfidence(result.confidence());
+            capture.setSuggestedAmountCents(billAmountExtractor.extract(result.text()).orElse(null));
             capture.setStatus(CaptureStatus.DONE);
         } catch (TesseractException e) {
             capture.setStatus(CaptureStatus.FAILED);

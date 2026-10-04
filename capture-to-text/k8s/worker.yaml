@@ -23,7 +23,8 @@ metadata:
   labels:
     app: capture-worker
 spec:
-  replicas: 1
+  # One Pod per partition of capture-uploads (3). More would sit idle; see APP_KAFKA_LISTENER_CONCURRENCY.
+  replicas: 3
   selector:
     matchLabels:
       app: capture-worker

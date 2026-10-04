@@ -10,6 +10,8 @@ COPY mvnw pom.xml ./
 RUN chmod +x mvnw && ./mvnw dependency:go-offline -B
 
 COPY src ./src
+# The React client; frontend-maven-plugin downloads Node and builds it during `package`.
+COPY frontend ./frontend
 RUN ./mvnw clean package -DskipTests -B
 
 # Run stage: JRE only, no build tooling, smaller attack surface and image size.

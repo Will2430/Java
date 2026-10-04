@@ -1,0 +1,79 @@
+:root {
+  color-scheme: light dark;
+  --border: #888;
+  --accent: #3b6ef5;
+}
+body {
+  font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+  max-width: 900px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+}
+h1 { font-size: 1.4rem; }
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  padding: 2.5rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.drop-zone.dragover {
+  background-color: rgba(59, 110, 245, 0.1);
+  border-color: var(--accent);
+}
+.drop-zone input { display: none; }
+#preview {
+  max-width: 100%;
+  max-height: 220px;
+  margin-top: 1rem;
+  border-radius: 6px;
+}
+textarea {
+  width: 100%;
+  min-height: 200px;
+  margin-top: 1rem;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.95rem;
+  padding: 0.5rem;
+  box-sizing: border-box;
+}
+.row { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem; flex-wrap: wrap; }
+button {
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.secondary { background: transparent; color: inherit; }
+#status { font-size: 0.9rem; opacity: 0.8; }
+#status.error { color: #d33; opacity: 1; }
+ul#history { list-style: none; padding: 0; margin-top: 0.5rem; }
+ul#history li {
+  padding: 0.6rem 0.5rem;
+  border-bottom: 1px solid rgba(128,128,128,0.3);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+ul#history li:hover { background: rgba(59, 110, 245, 0.08); }
+.snippet { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta { font-size: 0.8rem; opacity: 0.7; white-space: nowrap; }
+section { margin-top: 2rem; }
+#payPanel input, #payPanel select { padding: 0.45rem; border-radius: 6px; border: 1px solid var(--border); font: inherit; }
+#payAmount { width: 8rem; }
+#payDescription { flex: 1; min-width: 12rem; }
+.hint { font-size: 0.8rem; opacity: 0.7; }
+#paymentResult { padding: 0.8rem 1rem; border-radius: 8px; border: 1px solid var(--border); }
+#paymentResult.ok { border-color: #2a9d55; }
+#paymentResult.error { border-color: #d33; }
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}

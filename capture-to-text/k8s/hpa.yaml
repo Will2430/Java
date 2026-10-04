@@ -1,0 +1,28 @@
+# Autoscales the API between 1 and 5 Pods, aiming for 50% average CPU, measured
+# against each Pod's CPU *request* (250m), so the target is ~125m per Pod.
+# Needs metrics-server (`minikube addons enable metrics-server`).
+# The worker deliberately has no HPA: its real load signal is Kafka lag, not CPU,
+# and it can't use more than 3 Pods anyway (3 partitions).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: capture-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: capture-api
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+  behavior:
+    # Default is a 5-minute wait before removing Pods, so a short dip doesn't cause flapping.
+    # Shortened to 60s so a local demo visibly scales back down.
+    scaleDown:
+      stabilizationWindowSeconds: 60
