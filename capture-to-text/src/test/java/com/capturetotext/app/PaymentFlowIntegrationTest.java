@@ -73,9 +73,13 @@ import static org.mockito.Mockito.when;
  * are replaced by fakes, and Keycloak by a test key pair: tokens are signed here and the API
  * verifies them with the matching public key, exactly as it does with Keycloak's.
  */
+
+// Spring starts the application with these test-specific config overrides, on a random port chosen at runtime, not that properties are just the 
+// application-properties
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "stripe.webhook-secret=" + PaymentFlowIntegrationTest.WEBHOOK_SECRET,
         "app.outbox.poll-interval-ms=200",
+
         // Room for the 10-thread race; no refill during a test, so the 429 test is deterministic.
         "app.rate-limit.payments.capacity=" + PaymentFlowIntegrationTest.PAYMENT_BURST,
         "app.rate-limit.payments.refill-per-minute=1"
@@ -88,6 +92,8 @@ class PaymentFlowIntegrationTest {
     private static final KeyPair SIGNING_KEYS = rsaKeyPair();
 
     @Container
+
+    // points the uri and servers to the port that containers got in docker 
     @ServiceConnection
     static MongoDBContainer mongo = new MongoDBContainer("mongo:7.0");
 
@@ -104,6 +110,8 @@ class PaymentFlowIntegrationTest {
     static class TestJwtConfig {
         @Bean
         JwtDecoder jwtDecoder() {
+
+            // (RSAPublicKey) is a cast: "treat this generic public key as specifically an RSA one
             return NimbusJwtDecoder.withPublicKey((RSAPublicKey) SIGNING_KEYS.getPublic()).build();
         }
     }
@@ -113,6 +121,11 @@ class PaymentFlowIntegrationTest {
     @MockitoBean
     private ImageStorageService imageStorageService; // MinIO isn't needed for payments
 
+    /* - Autowired - constructor injection, where the IOC container injects a dependency into this field
+       - Template - a http client configured with the server's address, so later requets can jsut append to the url with an endpoint path, e.g. 
+       :localhost:543 -> :localhost:543/api/payments
+       - ObjectMapper is a the Jaskson parser 
+    */
     @Autowired
     private TestRestTemplate rest;
     @Autowired
@@ -122,8 +135,14 @@ class PaymentFlowIntegrationTest {
 
     @BeforeEach
     void fakeStripe() {
+
+        // whenever the application calls this mocked method with any args, run the code within the code block defined in lambda 'call' and 
+        // return the result
         when(paymentGateway.createCheckoutSession(any())).thenAnswer(call -> {
-            Thread.sleep(200); // a slow Stripe call widens the race window in the concurrency test
+            // a slow Stripe call widens the race window in the concurrency test, as we want make overlapping execution more likely
+            Thread.sleep(200); 
+
+            // the first arg is a Payment document (check createCheckoutSession)
             Payment payment = call.getArgument(0);
             return new CheckoutSession("cs_" + payment.getId(), "https://checkout.test/" + payment.getId());
         });
@@ -134,33 +153,67 @@ class PaymentFlowIntegrationTest {
         String user = newUser();
         String key = "race-" + UUID.randomUUID();
         int threads = 10;
+
+        // the gate before the waiting thread fires, e.g. the for loop parks each of the thread at this gate with await()
         CountDownLatch start = new CountDownLatch(1);
+
+        // creates a pool of 10 worker threads, which the executor manages
         ExecutorService pool = Executors.newFixedThreadPool(threads);
+
+        // list for holding the results of the 10 requests, where Future is a placeholder for the result, and ResponseEntity is the full HTTP response 
+        // (status code + headers + body)
         List<Future<ResponseEntity<String>>> responses = new ArrayList<>();
         for (int i = 0; i < threads; i++) {
+
+            /* Callable is an interface to represent an async task that returns a ResponseEntity when it executes
+             e.g. JS equivalent: 
+                    const request = async () => {
+                        await waitAtGate();
+                        return await createPayment(user, key, 2500);
+                    };
+             */
             Callable<ResponseEntity<String>> request = () -> {
-                start.await(); // release all threads at once
+                start.await(); 
                 return createPayment(user, key, 2500);
             };
+
+            // this submits the task to the executor, and the returned Future object is stored in the array
             responses.add(pool.submit(request));
         }
+        
+        // the latch is released, and all worker thread executes
         start.countDown();
 
         List<HttpStatus> statuses = new ArrayList<>();
         for (Future<ResponseEntity<String>> response : responses) {
+
+            // Future/response.get() is blocking, it waits untiil the thread has completed its job, and return its value, and 'valueOf' turns the
+            // extracted http code into its enum counterpart, e.g. 201 -> CREATED
             statuses.add(HttpStatus.valueOf(response.get().getStatusCode().value()));
         }
+        
+        // thread cleanup
         pool.shutdown();
 
         // One winner; the rest either replay it (200) or are told it's still in progress (409).
         assertThat(statuses).containsOnlyOnce(HttpStatus.CREATED);
         assertThat(statuses).allMatch(s -> s == HttpStatus.CREATED || s == HttpStatus.OK || s == HttpStatus.CONFLICT);
+
+        /* p is the lambda parameter that represents the current payment passed into the function, which Java infers from filteredOn(), where 
+        findAll() supposedly produces List<Payment> payments, which filter
+        does smtg conceptual to: 
+              for (Payment p : payments) {
+                if (key.equals(p.getIdempotencyKey())) { 
+                
+        */
         assertThat(paymentRepository.findAll()).filteredOn(p -> key.equals(p.getIdempotencyKey())).hasSize(1);
     }
 
     @Test
     void webhookCompletesThePaymentOnceAndEventsReachKafka() throws Exception {
         String paymentId = readId(createPayment(newUser(), "flow-" + UUID.randomUUID(), 4250));
+
+        // builds the JSON Stripe would send
         String webhook = checkoutCompleted("evt_" + UUID.randomUUID(), paymentId);
 
         ResponseEntity<String> first = postWebhook(webhook, sign(webhook));
@@ -326,13 +379,25 @@ class PaymentFlowIntegrationTest {
                 + "\"client_reference_id\":\"" + paymentId + "\",\"payment_status\":\"paid\"}}}";
     }
 
-    // Same scheme Stripe uses: HMAC-SHA256 of "timestamp.payload" with the webhook secret.
+    /* - Same scheme Stripe uses: HMAC-SHA256 of "timestamp.payload" with the webhook secret.
+       - server recieving the webhook respose also computes the HMAC using the timestamp and payload returned, and if it matches of the expected
+         signature, then its validated else 400 */
     private static String sign(String payload) {
         try {
+
+            // stripe response includes a timestamp so an old captured webhook cant be replayed
             long timestamp = Instant.now().getEpochSecond();
+
+            // get a HMAC (hash based message authentification code) calculator from Java
             Mac mac = Mac.getInstance("HmacSHA256");
+
+            // loads the secret into the calculator
             mac.init(new SecretKeySpec(WEBHOOK_SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+
+            // computes the HMAC (which is in raw bytes) with the timestamp and paylaod content embedded in the signature
             byte[] hmac = mac.doFinal((timestamp + "." + payload).getBytes(StandardCharsets.UTF_8));
+
+            // turns the bytes into hex text, and builds the header value, with timestamp and v1 being Stripe's scheme for HMAC signature
             return "t=" + timestamp + ",v1=" + HexFormat.of().formatHex(hmac);
         } catch (Exception e) {
             throw new IllegalStateException(e);
@@ -350,9 +415,17 @@ class PaymentFlowIntegrationTest {
 
     private Map<String, List<String>> readPaymentEvents(String paymentId, int expectedTypes) throws Exception {
         Properties props = new Properties();
+
+        // points at the throwaway testcontainer created
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+
+        // the consumer group identifier and its offset
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "test-" + UUID.randomUUID());
+
+        // starts reading from the beginning
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+
+        // turns Kafka raw bytes back into Java Strings
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
 
@@ -365,6 +438,13 @@ class PaymentFlowIntegrationTest {
                     if (!paymentId.equals(record.key())) {
                         continue;
                     }
+
+                    /* - JsonNode — an object representing JSON data that you've parsed.
+                       - computeIfAbsent() — get a value from a map, and if it doesn't exist yet, create it and store it.
+                       - .get reads a field from the JSON data as text
+                       - The hashmap uses the event as in 'payment.x' as the key and the eventIds as the value
+                       - the t-> creates an empty list if the key doesnt already has a value in the map
+                       - then the if block runs to get the eventId, but it checks from the list of ids, and append to it */ 
                     JsonNode event = objectMapper.readTree(record.value());
                     List<String> ids = eventIdsByType.computeIfAbsent(event.get("type").asText(), t -> new ArrayList<>());
                     if (!ids.contains(event.get("eventId").asText())) {

@@ -29,7 +29,9 @@ public class Payment {
     @Id
     private String id;
 
-    // Optimistic locking: save() fails if someone else saved this document since we read it.
+    // @version is used specifically to implement Optimistic locking in Srpingboot: save() fails if someone else saved this document since we read it.
+    // Spring automatically runs a query that checks and increment the version count, only if the version count stays what it was, when Spring first
+    // retrieved it, else it throws an exception
     @Version
     private Long version;
 

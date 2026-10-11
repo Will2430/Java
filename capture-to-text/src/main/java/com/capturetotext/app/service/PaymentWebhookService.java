@@ -80,6 +80,7 @@ public class PaymentWebhookService {
         return Outcome.APPLIED;
     }
 
+    // this Event is part of Stripe's SDK defining a notification
     private Event verify(String payload, String signatureHeader) {
         String secret = stripeProperties.webhookSecret();
         if (secret == null || secret.isBlank()) {
@@ -87,6 +88,7 @@ public class PaymentWebhookService {
         }
         try {
             // Checks the HMAC signature and rejects events older than 5 minutes (replay protection).
+            // we recieve raw Http response from Stripe, and thie construct verifies the signature and parse the strings in an 'Event'
             return Webhook.constructEvent(payload, signatureHeader, secret);
         } catch (SignatureVerificationException e) {
             throw new InvalidWebhookSignatureException("Invalid Stripe signature: " + e.getMessage());

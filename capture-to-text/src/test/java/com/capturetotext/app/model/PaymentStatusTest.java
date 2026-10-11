@@ -31,9 +31,18 @@ class PaymentStatusTest {
         }
     }
 
+
+    /* - assert that a final state cant transition past/to other states
+       - Junit is a Spring test dependencies its pulls in, and test related annotation belongs to it
+       - Parameterized Test allows a single method to be invocated for different final states, instead of writing individual @Test, which have the
+        same assert block
+       - EnumSource denotes the test input source (using enum values), value denotes the enum class to draw values from, and names selet only 
+        specified enum constant */
     @ParameterizedTest
     @EnumSource(value = PaymentStatus.class, names = {"SUCCEEDED", "FAILED", "EXPIRED"})
     void finalStatesCannotMoveAnywhere(PaymentStatus finalState) {
+
+        // e.g. SUCCEEDED.canTransitionto(CREATED).isFalse()
         for (PaymentStatus to : new PaymentStatus[]{CREATED, PENDING, SUCCEEDED, FAILED, EXPIRED}) {
             assertThat(finalState.canTransitionTo(to)).isFalse();
         }

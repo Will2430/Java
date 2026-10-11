@@ -28,8 +28,12 @@ public class PaymentController {
         this.paymentService = paymentService;
     }
 
-    // 201 for a new payment, 200 when a retry replays the original. The client then redirects to checkoutUrl.
-    // The payer is the verified token's subject, never a field in the body.
+    /* - 201 for a new payment, 200 when a retry replays the original. The client then redirects to checkoutUrl.
+       - frontend constructs the request and @RequestBody tells spring to turn the JSON body into record through deserialization, Jackson (library
+        Springboot wires in by default that handles JSON -> java object serializartion and v.v.) 
+        - @Valid then runs the constraints in the request record's constructor
+        - jwt.getSubject() returns the 'sub' claim/string identifier of JWT, which downstream uses as the owner id
+     */
     @PostMapping
     public ResponseEntity<PaymentResponse> createPayment(@RequestHeader("Idempotency-Key") String idempotencyKey,
                                                          @Valid @RequestBody CreatePaymentRequest request,

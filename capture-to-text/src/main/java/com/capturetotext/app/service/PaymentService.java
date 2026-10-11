@@ -82,6 +82,7 @@ public class PaymentService {
         }
         if (payment.getStatus() == PaymentStatus.CREATED) {
             // Another request is probably mid-way through calling Stripe; don't race it.
+            // returns the 409 code if the threshold is > then current timestamp, only assumes the reqeust fails when this is false, and retries
             if (payment.hasCheckoutAttemptSince(clock.instant().minus(RESUME_AFTER))) {
                 throw new IdempotencyRequestInProgressException(idempotencyKey);
             }

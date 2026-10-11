@@ -15,6 +15,7 @@ import java.util.HexFormat;
  * Body of POST /api/payments. Money is a whole number of the currency's smallest unit
  * (cents), the same way Stripe takes it, so there's no floating-point rounding anywhere.
  */
+
 public record CreatePaymentRequest(
         String captureId,
         // Stripe's minimum charge is about 50 cents.

@@ -49,6 +49,9 @@ class PaymentServiceTest {
 
     private static final String KEY = "key-123";
 
+
+    // a fake object with no DI involved, i.e. you initialize them manually, whereas MockitoBean is one which replaces the running application 
+    // context's bean with a fake one
     @Mock
     private PaymentRepository paymentRepository;
     @Mock
@@ -75,6 +78,8 @@ class PaymentServiceTest {
         ownCapture();
         when(paymentRepository.save(any())).thenAnswer(call -> {
             Payment saved = call.getArgument(0);
+
+            // sets a private field by name, bypassing encapsulation
             ReflectionTestUtils.setField(saved, "id", "payment-1");
             return saved;
         });
