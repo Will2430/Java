@@ -1,0 +1,59 @@
+# Layered on top of docker-compose.yml on the EC2 server (user_data.sh.tftpl runs both).
+# On the server every piece is a container on one Docker network, so each one finds the
+# others by service name (kafka, mongo, minio...) instead of localhost or
+# host.minikube.internal. Relative paths (build: ., ./worker) resolve from the folder of
+# the first file, docker-compose.yml.
+services:
+  kafka:
+    restart: unless-stopped
+    environment:
+      # Both listeners advertise "kafka": every client on the server is another container.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://kafka:29092
+
+  minio:
+    restart: unless-stopped
+
+  keycloak:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped
+
+  # On the PC Mongo is a Windows service; here it's one more container.
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    # Mongo's cache would otherwise claim about half the server's 8 GiB.
+    command: ["--wiredTigerCacheSizeGB", "0.5"]
+    volumes:
+      - mongo-data:/data/db
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on: [kafka, mongo, minio, keycloak, redis]
+    # 127.0.0.1 only: the Session Manager tunnel arrives from inside the server.
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx768m"
+      SPRING_DATA_MONGODB_URI: "mongodb://mongo:27017/capturetotext"
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      MINIO_ENDPOINT: "http://minio:9000"
+      # Same split as k8s/configmap.yaml: keys fetched by service name, issuer stays
+      # http://localhost:8180 because that's where the browser logs in (through the tunnel).
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: "http://keycloak:8080/realms/capture-to-text/protocol/openid-connect/certs"
+      SPRING_DATA_REDIS_HOST: "redis"
+
+  worker:
+    build: ./worker
+    restart: unless-stopped
+    depends_on: [kafka, mongo, minio]
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx768m"
+      SPRING_DATA_MONGODB_URI: "mongodb://mongo:27017/capturetotext"
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      MINIO_ENDPOINT: "http://minio:9000"
+
+volumes:
+  mongo-data:

@@ -11,17 +11,17 @@ kind: Job
 metadata:
   name: k6-loadtest
 spec:
-  backoffLimit: 0
-  template:
+  backoffLimit: 0   # if the run fails, dont retry
+  template:         # template used by Job to create the pod
     metadata:
       labels:
         app: k6-loadtest
     spec:
-      restartPolicy: Never
+      restartPolicy: Never    # when the k6 job completes, leave the pod stopped
       containers:
         - name: k6
           image: grafana/k6:0.55.0
-          args: ["run", "/scripts/k6-script.js"]
+          args: ["run", "/scripts/k6-script.js"]  # this is the command that runs the script
           env:
             - name: BASE_URL
               value: "http://capture-api:8080"
@@ -44,4 +44,5 @@ spec:
       volumes:
         - name: scripts
           configMap:
-            name: k6-loadtest-scripts
+            name: k6-loadtest-scripts  # this is the name of our ConfigMap declared in kustomization.yaml , i.e. using this map contet's
+            # and show them as files at the mount path? /scripts/k6-scripts.js 

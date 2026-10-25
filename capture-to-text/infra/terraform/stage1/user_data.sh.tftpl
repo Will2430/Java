@@ -1,0 +1,25 @@
+#!/bin/bash
+# Runs once, as root, on the server's first boot. Output: /var/log/cloud-init-output.log
+set -euxo pipefail
+
+dnf install -y docker git
+systemctl enable --now docker
+
+# Amazon Linux's docker package has no compose or buildx plugin, so fetch both.
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+  https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64
+curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx \
+  https://github.com/docker/buildx/releases/download/v0.17.1/buildx-v0.17.1.linux-amd64
+chmod +x /usr/local/lib/docker/cli-plugins/*
+
+git clone --depth 1 --branch ${git_ref} ${repo_url} /opt/app
+
+cat > /opt/compose.server.yml <<'COMPOSE'
+${compose_server}
+COMPOSE
+
+# Builds the API and worker images from the Dockerfiles, then starts everything.
+# restart: unless-stopped brings the containers back after a stop/start.
+cd /opt/app/capture-to-text
+docker compose -f docker-compose.yml -f /opt/compose.server.yml up -d --build

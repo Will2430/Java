@@ -1,0 +1,6 @@
+# Downloaded provider plugins (init fetches them again) and state (may hold secrets).
+.terraform/
+*.tfstate
+*.tfstate.*
+# Saved plans (terraform plan -out) hold every value in plain form too.
+*tfplan

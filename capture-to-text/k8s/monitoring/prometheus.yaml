@@ -43,6 +43,8 @@ data:
       scrape_interval: 5s
     scrape_configs:
       - job_name: annotated-pods
+        # * this turns on service discovery which ask kubernetes for a list of all the pods. It then stores the metadata of each pods under 
+        # temporary labels starting with __meta_ *. 
         kubernetes_sd_configs:
           - role: pod
         relabel_configs:
@@ -50,18 +52,20 @@ data:
           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
             action: keep
             regex: "true"
-          # Custom metrics path from the annotation (default would be /metrics).
+          # * Define the path to scape within the pods at /actuator/prometheus *.
           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
             action: replace
             target_label: __metrics_path__
             regex: (.+)
-          # Rewrite the scrape address to podIP:<annotated port>.
+          # Rewrite the scrape address to podIP:<annotated port>
+          # * The ephemeral address of each pod + ports 8080 *.
           - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
             action: replace
             regex: ([^:]+)(?::\d+)?;(\d+)
             replacement: $1:$2
             target_label: __address__
           # Turn pod metadata into queryable labels: per-pod graphs need `pod`.
+          # * Every metric line from this pod gets an applicaton name and an app label *
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
           - source_labels: [__meta_kubernetes_pod_label_app]

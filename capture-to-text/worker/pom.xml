@@ -35,9 +35,14 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
+
+            <!-- this dependency turns on Spring built-in counting for each HTTP, Kafka listener call, memory, CPU -->
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
         <dependency>
+
+            <!-- ta library that holds the actuator's count in memory  + an add on which translates the counter into a format that Prometheus 
+            understands-->
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
