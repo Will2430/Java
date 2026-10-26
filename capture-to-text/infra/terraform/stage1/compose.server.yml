@@ -11,6 +11,10 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://kafka:29092
 
   minio:
+    # minio/minio was removed from Docker Hub; Chainguard's build runs the same minio binary.
+    # root so it can write to the fresh /data volume (the image defaults to a non-root user).
+    image: chainguard/minio:latest
+    user: root
     restart: unless-stopped
 
   keycloak:

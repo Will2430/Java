@@ -12,8 +12,9 @@ resource "aws_iam_role" "server" {
   })
 }
 
-# Permissions policy: AWS's ready-made one that lets the SSM Agent on the server
-# register with Systems Manager, which is what makes Session Manager work.
+# Permissions policy - aws:policy is an AWS managed policy that every account can attach, and it denotes a permission level for borrower to do 
+# whatever 'AmazonSSMManagedInstanceCore' allows, and since SSM agaent is just a program on the server, it can then use the key issued for establishing
+# outbound calls to System Manger.
 resource "aws_iam_role_policy_attachment" "ssm" {
   role       = aws_iam_role.server.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"

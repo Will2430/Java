@@ -39,6 +39,7 @@ resource "aws_instance" "server" {
   tags = { Name = "capture-to-text-server" }
 }
 
+# this is to allow Terraform to start and stop the server based on the state
 resource "aws_ec2_instance_state" "server" {
   instance_id = aws_instance.server.id
   state       = var.server_running ? "running" : "stopped"
