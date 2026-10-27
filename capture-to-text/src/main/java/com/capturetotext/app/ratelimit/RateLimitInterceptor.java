@@ -37,6 +37,7 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         String group = createPayment ? "payments" : "api";
         RateLimitProperties.Bucket bucket = createPayment ? properties.payments() : properties.api();
 
+        // the key is per user and its made up of a combination of strings, auth.getName() returns the "sub" field from the JWT json object
         RedisRateLimiter.Decision decision = rateLimiter.tryConsume("rate:" + group + ":" + auth.getName(), bucket);
         if (!decision.allowed()) {
             // Handled by GlobalExceptionHandler: 429 Too Many Requests + Retry-After.

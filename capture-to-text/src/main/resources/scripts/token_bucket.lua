@@ -1,9 +1,10 @@
 -- Token bucket rate limiter. One bucket per key (user + route group).
+
 -- KEYS[1] = bucket key; ARGV[1] = capacity (max burst); ARGV[2] = tokens refilled per millisecond.
 -- Returns {allowed (1/0), milliseconds until the next token}.
---
--- Redis runs a script atomically: no other command runs between the read and the write below,
--- so two API Pods handling the same user at the same instant can't both spend the last token.
+
+-- Redis runs a script atomically: it doesnt interleave another client's attempt to read/write to the script at the same time, so two API Pods handling the same user at the same instant can't both spend the last
+-- token.
 -- The clock is Redis's own (TIME), so Pods with slightly different clocks still agree.
 local capacity = tonumber(ARGV[1])
 local rate = tonumber(ARGV[2])
