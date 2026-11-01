@@ -3,6 +3,8 @@
 # others by service name (kafka, mongo, minio...) instead of localhost or
 # host.minikube.internal. Relative paths (build: ., ./worker) resolve from the folder of
 # the first file, docker-compose.yml.
+# Terraform fills in the bucket and region placeholders before the server sees this file
+# (templatefile in server.tf), so compose's own dollar-brace variables can't be used here.
 services:
   kafka:
     restart: unless-stopped
@@ -10,12 +12,10 @@ services:
       # Both listeners advertise "kafka": every client on the server is another container.
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://kafka:29092
 
+  # Images live in S3 now. An override file can't delete a service, but a profile that's
+  # never switched on means "up" skips it.
   minio:
-    # minio/minio was removed from Docker Hub; Chainguard's build runs the same minio binary.
-    # root so it can write to the fresh /data volume (the image defaults to a non-root user).
-    image: chainguard/minio:latest
-    user: root
-    restart: unless-stopped
+    profiles: ["local-only"]
 
   keycloak:
     restart: unless-stopped
@@ -35,7 +35,7 @@ services:
   api:
     build: .
     restart: unless-stopped
-    depends_on: [kafka, mongo, minio, keycloak, redis]
+    depends_on: [kafka, mongo, keycloak, redis]
     # 127.0.0.1 only: the Session Manager tunnel arrives from inside the server.
     ports:
       - "127.0.0.1:8080:8080"
@@ -47,7 +47,13 @@ services:
       JAVA_TOOL_OPTIONS: "-Xmx768m"
       SPRING_DATA_MONGODB_URI: "mongodb://mongo:27017/capturetotext"
       SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
-      MINIO_ENDPOINT: "http://minio:9000"
+      # The MinIO client speaks S3, so only the address changes. Empty keys make
+      # MinioConfig borrow the server's role instead (see its comment).
+      MINIO_ENDPOINT: "https://s3.${region}.amazonaws.com"
+      MINIO_REGION: "${region}"
+      MINIO_BUCKET: "${bucket}"
+      MINIO_ACCESS_KEY: ""
+      MINIO_SECRET_KEY: ""
       # Same split as k8s/configmap.yaml: keys fetched by service name, issuer stays
       # http://localhost:8180 because that's where the browser logs in (through the tunnel).
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: "http://keycloak:8080/realms/capture-to-text/protocol/openid-connect/certs"
@@ -56,12 +62,16 @@ services:
   worker:
     build: ./worker
     restart: unless-stopped
-    depends_on: [kafka, mongo, minio]
+    depends_on: [kafka, mongo]
     environment:
       JAVA_TOOL_OPTIONS: "-Xmx768m"
       SPRING_DATA_MONGODB_URI: "mongodb://mongo:27017/capturetotext"
       SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
-      MINIO_ENDPOINT: "http://minio:9000"
+      MINIO_ENDPOINT: "https://s3.${region}.amazonaws.com"
+      MINIO_REGION: "${region}"
+      MINIO_BUCKET: "${bucket}"
+      MINIO_ACCESS_KEY: ""
+      MINIO_SECRET_KEY: ""
 
 volumes:
   mongo-data:

@@ -13,6 +13,9 @@ resource "aws_instance" "server" {
   # Only answer metadata requests that carry a session token (IMDSv2).
   metadata_options {
     http_tokens = "required"
+    # The api/worker containers ask for the role's keys from behind Docker's network, one
+    # extra hop away. With a limit of 1 the token reply dies on the way and S3 calls fail.
+    http_put_response_hop_limit = 2
   }
 
   # Docker images, build caches and Mongo/Kafka data need more than the default 8 GiB.
@@ -24,9 +27,12 @@ resource "aws_instance" "server" {
 
   # Runs once, as root, on first boot. compose.server.yml is pasted into the script.
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    repo_url       = var.repo_url
-    git_ref        = var.git_ref
-    compose_server = file("${path.module}/compose.server.yml")
+    repo_url = var.repo_url
+    git_ref  = var.git_ref
+    compose_server = templatefile("${path.module}/compose.server.yml", {
+      bucket = aws_s3_bucket.images.bucket
+      region = var.region
+    })
   })
   # The script only runs on first boot, so a changed script means a new server.
   user_data_replace_on_change = true

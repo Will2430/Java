@@ -14,3 +14,7 @@ output "tunnel_keycloak" {
 output "shell" {
   value = "aws ssm start-session --target ${aws_instance.server.id}"
 }
+
+output "bucket" {
+  value = aws_s3_bucket.images.bucket
+}

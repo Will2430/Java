@@ -609,3 +609,85 @@ The access token is a **JWT**: a JSON object signed by Keycloak, which the brows
 5. `@AuthenticationPrincipal Jwt jwt` in a controller injects that already-verified token, so the controller can read claims such as `jwt.getSubject()` (the user's `sub`) to know **which user** made the request.
 
 > **Correction:** With RSA signatures, verification isn't "decrypting" the signature. It's a verify operation using the public key that confirms the signature was produced over that exact hash by the matching private key.
+
+## 8. Stage 4 Deploy: Reverse Proxy and First Login
+
+### 8.1 Why Stage 4
+
+- Stage 1 has **no inbound SG rules**. `localhost:8080`/`8180` only work because the Session Manager tunnel maps **my PC's** ports to the server's.
+- Once public, `localhost` in a visitor's browser means **their own laptop**, so every browser-facing URL must become the domain.
+- It also needs **HTTPS**: Stripe only sends webhooks to HTTPS, Keycloak's `sslRequired: external` refuses plain HTTP off localhost, and the PKCE Web Crypto API (used by `keycloak-js`) only works on HTTPS or localhost.
+
+### 8.2 Who opens what
+
+A request to `https://example.com` passes three separate pieces:
+
+1. **SG** (AWS firewall) opens 80/443. Without it, packets are dropped before reaching the server.
+2. **Docker** publishes the Caddy container's `80:80`/`443:443`, so traffic on the server's ports goes to Caddy.
+3. **Caddy** (reverse proxy) decrypts the HTTPS, reads the **Host header**, and makes a **new** plain-HTTP request to the right container.
+
+> **Correction:** Caddy doesn't open ports and isn't a tunnel. A tunnel forwards raw bytes blindly; a proxy reads each request and decides where it goes, which is how one port 443 serves two sites.
+
+```
+Internet → IGW → EC2 (SG: 80, 443 only)
+                  └─ caddy :80/:443   ← only published ports
+                       ├─ example.com      → api:8080      (page + /api/**, incl. webhook)
+                       └─ auth.example.com → keycloak:8080
+                     worker, kafka, mongo, redis: no published port
+```
+
+```
+example.com {
+    reverse_proxy api:8080
+}
+auth.example.com {
+    reverse_proxy keycloak:8080
+}
+```
+
+- The Stripe webhook needs no special route. It's just a path on the API (`permitAll`, protected by Stripe's signature).
+- **SAA comparison:** normally IGW → **ALB** (public subnet, ACM cert) → app servers (private subnet). The ALB *is* a managed reverse proxy. We skip the ALB (~$16/mo) and private subnet (needs NAT, ~$33/mo), so Caddy takes the ALB's place on the server itself. Stage 5 moves to the ALB shape.
+
+### 8.3 First visit, step by step
+
+1. **Page load:** `https://example.com` → DNS gives the Elastic IP → Caddy (`Host: example.com`) → `api:8080` serves the React files.
+2. **`initAuth()`** runs before anything renders. `keycloak-js` builds the login URL from `VITE_KEYCLOAK_URL` (baked in at build time) and sets `window.location` → **redirect 1** (done by JS, not Caddy).
+3. **Login page:** `auth.example.com` → same IP, same Caddy, but `Host: auth.example.com` → `keycloak:8080`.
+4. **Alice logs in.** Keycloak replies 302 to `https://example.com/?code=...` → **redirect 2** (only if listed in the realm's `redirectUris`).
+5. **Code → tokens:** `keycloak-js` fetches `auth.example.com/.../token` with the code + PKCE verifier. Cross-domain, so `https://example.com` must be in `webOrigins` (CORS).
+6. **API calls** carry `Authorization: Bearer ...` → Caddy → API.
+7. **API validates** the token, fetching keys **internally** from `http://keycloak:8080` (never via Caddy), and checks `iss` = `https://auth.example.com/realms/capture-to-text`.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant C as Caddy
+    participant A as api:8080
+    participant K as keycloak:8080
+    B->>C: GET example.com
+    C->>A: forward
+    A-->>B: React files
+    B->>C: redirect 1 → auth.example.com (keycloak-js)
+    C->>K: forward
+    K-->>B: login page → 302 example.com/?code (redirect 2)
+    B->>C: POST auth.example.com/token (code + verifier)
+    C->>K: forward
+    K-->>B: access token
+    B->>C: /api/... + Bearer token
+    C->>A: forward
+    A->>K: JWKS keys (internal, no Caddy)
+```
+
+### 8.4 Settings that must agree
+
+All change from `localhost` together; one leftover breaks login at the step that uses it:
+
+- `VITE_KEYCLOAK_URL` → `https://auth.example.com` (frontend build)
+- `KC_HOSTNAME` → `https://auth.example.com`. Keycloak writes this into its own pages and the token's `iss`; left as localhost, the login form would post to the visitor's laptop.
+- Realm `redirectUris` / `webOrigins` → `https://example.com`
+- API `issuer-uri` → the new Keycloak URL (the internal JWK URL stays `http://keycloak:8080`)
+- Stripe success/cancel URLs
+
+> **Note:** Caddy talks plain HTTP to Keycloak, so Keycloak must trust Caddy's `X-Forwarded-*` headers (`KC_PROXY_HEADERS=xforwarded`) to know the original request was HTTPS.
+
+> **Note:** Needs an **Elastic IP** (DNS points at a fixed IP; the public IP changes on every stop/start), and port **80 stays open** for Let's Encrypt's domain check.

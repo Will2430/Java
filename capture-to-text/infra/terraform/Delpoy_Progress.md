@@ -2,13 +2,15 @@
 
 Learning project: deploy capture-to-text to AWS with Terraform, in stages, with a lesson
 before each stage. Every AWS resource comes from Terraform, never from the console or the CLI.
+All the Terraform lives in this one folder and grows with each stage. There are no per-stage
+copies, so `git log` and the notes below are the history.
 
 ## Stages
 
 | # | Stage | Status |
 |---|-------|--------|
 | 1 | Everything on one EC2 server (docker compose), reached through Session Manager tunnels | **Done, works end to end** (upload goes PENDING → DONE) |
-| 2 | MinIO → S3 | **Next** |
+| 2 | MinIO → S3 | **Code written, not applied.** Lesson 0018: https://claude.ai/artifact/VQ2Bm7CfFmn53wE4aMvwZA |
 | 3 | Mongo container → MongoDB Atlas free tier (`mongodbatlas` provider) | |
 | 4 | HTTPS + Stripe keys/webhooks | |
 | 5 | ECS Fargate + ALB, remote state | |
@@ -23,7 +25,7 @@ server when you're not using it.
   region `ap-southeast-1`. Check it with `aws sts get-caller-identity`.
 - Needs Terraform ≥ 1.16, AWS CLI v2, and the Session Manager plugin.
 
-## Stage 1 (`stage1/`)
+## Stage 1: what it added
 
 - One public subnet with an IGW, and **no inbound security group rules**. Access is only
   through Session Manager.
@@ -32,9 +34,9 @@ server when you're not using it.
 - `user_data.sh.tftpl` runs on first boot only. It installs docker plus the compose and buildx
   plugins, clones `github.com/Will2430/Java` (main), then runs
   `docker compose -f docker-compose.yml -f /opt/compose.server.yml up -d --build`.
-- `compose.server.yml` points every service at the others by service name. It adds a mongo
-  container, and it replaces `minio/minio` (removed from Docker Hub) with
-  `chainguard/minio:latest` + `user: root`.
+- `compose.server.yml` points every service at the others by service name and adds a mongo
+  container. In stage 1 it also swapped `minio/minio` (removed from Docker Hub) for
+  `chainguard/minio:latest`; stage 2 removed that.
 - `user_data_replace_on_change = true`: editing the boot script or `compose.server.yml`
   **replaces the server** on the next apply.
 - No Stripe keys, so payments don't work yet. That's expected until stage 4.
@@ -47,41 +49,40 @@ terraform output                             # prints tunnel_api, tunnel_keycloa
 # run tunnel_api and tunnel_keycloak in two terminals, browse http://localhost:8080 (alice/alice)
 terraform apply -var server_running=false    # STOP: keeps the disk, built images and data; only disk is billed
 terraform apply                              # start again; containers come back (restart: unless-stopped)
-terraform destroy                            # deletes everything (only when done with stage 1 for good)
+terraform destroy                            # deletes everything, including the S3 bucket and its images
 ```
 
 On the server: `sudo tail -n 20 /var/log/cloud-init-output.log`,
-`sudo docker compose -p capture-to-text ps` (expect 7 services).
+`sudo docker compose -p capture-to-text ps` (expect 6 services once stage 2 is applied).
 
 ## ⚠ Switching devices: Terraform state is local
 
-`stage1/terraform.tfstate` is gitignored, so it won't arrive with a git pull. Without it,
+`terraform.tfstate` (in this folder) is gitignored, so it won't arrive with a git pull. Without it,
 Terraform on the other device thinks nothing exists, and an apply would create a **second**
 VPC and server. Before switching, do one of these:
 
-1. Copy `stage1/terraform.tfstate` to the same path on the other device (privately, not via
+1. Copy `terraform.tfstate` to the same path on the other device (privately, not via
    git), or
 2. `terraform destroy` here, then apply fresh there (the first boot rebuilds everything, about 10 min).
 
 Remote state (an S3 backend) is planned for stage 5. Moving it earlier would also fix this.
 
-## Plans for stages 2–5 (not built yet)
+## Stage 2 and the plans for 3–5
 
-Each stage starts with a lesson (see "Teaching"), then the code, then you run apply.
-Planned as a new folder per stage (`stage2/`, ...), each copied from the previous one.
+Each stage starts with a lesson (see "Teaching"), then the code, then you run apply. New
+stages edit and add to the files here.
 
-### Stage 2: MinIO → S3
+### Stage 2: MinIO → S3 (code written, see lesson 0018)
 
-- Terraform: an S3 bucket (private, encrypted, public access blocked), plus an inline
-  policy on the server role that allows only `s3:GetObject/PutObject` on that bucket.
-- App: API and worker talk to S3 instead of `http://minio:9000`. Credentials come from the
-  role through IMDS, with no keys anywhere. Check whether the MinIO Java client picks those up
-  (it has an IAM-role credentials provider) or whether the code should switch to the AWS SDK.
-- Open: who creates the bucket? Terraform should own it, but
-  `ImageStorageService.ensureBucketExists` also creates it. Likely: make that a check only,
-  or turn it off by config.
-- Remove the minio service from `compose.server.yml`.
-- Option: start remote state here (an S3 backend with `use_lockfile = true`, no DynamoDB
+- Added: `storage.tf` (bucket named after the account id, `force_destroy`, public access
+  block), an inline policy in `iam.tf` (ListBucket on the bucket, Put/GetObject on `/*`),
+  and `http_put_response_hop_limit = 2`. `compose.server.yml` became a template (MinIO behind
+  an unused profile, empty `MINIO_ACCESS_KEY` → `MinioConfig` uses `IamAwsProvider`).
+- Decision: Terraform owns the bucket; the API's `ensureBucketExists` only finds it.
+- To run: push the `MinioConfig.java` change to main, then `terraform apply` here. Plan: 5 to
+  add, 8 to change (tags), 2 to destroy. The VPC stays; the server is replaced, so stage 1's
+  test captures in Mongo are lost. Expect 6 services.
+- Option: start remote state next (an S3 backend with `use_lockfile = true`, no DynamoDB
   needed). That fixes the device-switching problem above sooner than stage 5.
 
 ### Stage 3: Mongo → MongoDB Atlas free tier (M0)
@@ -123,13 +124,14 @@ Planned as a new folder per stage (`stage2/`, ...), each copied from the previou
 - Open: where Kafka, Keycloak and Redis live. Options are keeping them on the EC2 server,
   running them as Fargate services (needs storage for Kafka), or managed services (MSK and
   ElastiCache are expensive for this account). Decide in that stage's lesson.
-- Remote state, if it wasn't done in stage 2.
+- Remote state, if it wasn't done earlier.
 
 ## Teaching
 
 - Published lessons: 0016 Terraform first contact
   (https://claude.ai/artifact/WAMVq4YjTydVMuGz2Miwp6), 0017 One server in a VPC
-  (https://claude.ai/artifact/EySFyRLTkPhHcHuSfgQHaJ). The lesson sources and the teaching
+  (https://claude.ai/artifact/EySFyRLTkPhHcHuSfgQHaJ), 0018 Images in S3
+  (https://claude.ai/artifact/VQ2Bm7CfFmn53wE4aMvwZA). The lesson sources and the teaching
   rules (`NOTES.md`) live in the separate `Learning/` folder, which isn't in this repo.
 - Use the same AWS terms as "AWS Foundations: the KedaiPay story"
   (https://claude.ai/artifact/Uz8oRDzCAzKrxidnn3hkX2): local line, IGW line, borrow the role,

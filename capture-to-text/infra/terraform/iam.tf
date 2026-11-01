@@ -20,6 +20,30 @@ resource "aws_iam_role_policy_attachment" "ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+# A second permissions policy, written here (inline) because no AWS-managed one is limited
+# to a single bucket. ListBucket lets the API's startup check (bucketExists) see the bucket;
+# Put/Get are the upload (API) and download (worker). Nothing else, and no other bucket.
+resource "aws_iam_role_policy" "images" {
+  name = "capture-to-text-images"
+  role = aws_iam_role.server.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = aws_s3_bucket.images.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject"]
+        Resource = "${aws_s3_bucket.images.arn}/*"
+      }
+    ]
+  })
+}
+
 # The wrapper that attaches a role to an EC2 server (the console makes this for you).
 resource "aws_iam_instance_profile" "server" {
   name = "capture-to-text-server"

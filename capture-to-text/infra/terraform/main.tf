@@ -1,5 +1,5 @@
-# Stage 1: the whole app (today's docker-compose.yml plus the API and worker images)
-# on one EC2 server in its own VPC, reached only through a Session Manager tunnel.
+# The whole deploy, grown in place stage by stage (see Delpoy_Progress.md): the app on one
+# EC2 server, reached through a Session Manager tunnel, with uploaded images in S3.
 terraform {
   required_version = ">= 1.10"
 
@@ -18,7 +18,6 @@ provider "aws" {
   default_tags {
     tags = {
       project = "capture-to-text"
-      stage   = "1"
     }
   }
 }
