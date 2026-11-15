@@ -15,6 +15,11 @@ output "shell" {
   value = "aws ssm start-session --target ${aws_instance.server.id}"
 }
 
+output "server_ip" {
+  description = "The fixed IP that Atlas's access list allows."
+  value       = aws_eip.server.public_ip
+}
+
 output "bucket" {
   value = aws_s3_bucket.images.bucket
 }

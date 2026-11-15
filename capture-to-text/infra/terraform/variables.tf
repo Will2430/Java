@@ -21,6 +21,11 @@ variable "repo_url" {
   default     = "https://github.com/Will2430/Java.git"
 }
 
+variable "atlas_org_id" {
+  description = "Your Atlas organization id (Atlas UI: Organization > Settings). Not a secret."
+  type        = string
+}
+
 variable "git_ref" {
   type    = string
   default = "main"

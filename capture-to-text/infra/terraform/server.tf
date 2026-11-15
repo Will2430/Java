@@ -18,7 +18,7 @@ resource "aws_instance" "server" {
     http_put_response_hop_limit = 2
   }
 
-  # Docker images, build caches and Mongo/Kafka data need more than the default 8 GiB.
+  # Docker images, build caches and Kafka data need more than the default 8 GiB.
   root_block_device {
     volume_size = 30
     volume_type = "gp3"
@@ -27,8 +27,10 @@ resource "aws_instance" "server" {
 
   # Runs once, as root, on first boot. compose.server.yml is pasted into the script.
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    repo_url = var.repo_url
-    git_ref  = var.git_ref
+    repo_url        = var.repo_url
+    git_ref         = var.git_ref
+    region          = var.region
+    mongo_uri_param = aws_ssm_parameter.mongo_uri.name
     compose_server = templatefile("${path.module}/compose.server.yml", {
       bucket = aws_s3_bucket.images.bucket
       region = var.region

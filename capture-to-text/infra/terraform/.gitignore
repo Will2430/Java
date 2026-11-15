@@ -4,3 +4,5 @@
 *.tfstate.*
 # Saved plans (terraform plan -out) hold every value in plain form too.
 *tfplan
+
+*.tfvars

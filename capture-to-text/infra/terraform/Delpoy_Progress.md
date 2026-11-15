@@ -10,8 +10,8 @@ copies, so `git log` and the notes below are the history.
 | # | Stage | Status |
 |---|-------|--------|
 | 1 | Everything on one EC2 server (docker compose), reached through Session Manager tunnels | **Done, works end to end** (upload goes PENDING → DONE) |
-| 2 | MinIO → S3 | **Code written, not applied.** Lesson 0018: https://claude.ai/artifact/VQ2Bm7CfFmn53wE4aMvwZA |
-| 3 | Mongo container → MongoDB Atlas free tier (`mongodbatlas` provider) | |
+| 2 | MinIO → S3 | **Done, applied and verified** (upload lands in the S3 bucket). Lesson 0018: https://claude.ai/artifact/VQ2Bm7CfFmn53wE4aMvwZA |
+| 3 | Mongo container → MongoDB Atlas free tier (`mongodbatlas` provider) | **Code written, not applied** (needs Atlas account + service account). Lesson 0019: https://claude.ai/artifact/XwQNLi3Joxt1uzRSka9vJy |
 | 4 | HTTPS + Stripe keys/webhooks | |
 | 5 | ECS Fargate + ALB, remote state | |
 
@@ -53,7 +53,7 @@ terraform destroy                            # deletes everything, including the
 ```
 
 On the server: `sudo tail -n 20 /var/log/cloud-init-output.log`,
-`sudo docker compose -p capture-to-text ps` (expect 6 services once stage 2 is applied).
+`sudo docker compose -p capture-to-text ps` (5 services from stage 3: no minio, no mongo).
 
 ## ⚠ Switching devices: Terraform state is local
 
@@ -72,7 +72,7 @@ Remote state (an S3 backend) is planned for stage 5. Moving it earlier would als
 Each stage starts with a lesson (see "Teaching"), then the code, then you run apply. New
 stages edit and add to the files here.
 
-### Stage 2: MinIO → S3 (code written, see lesson 0018)
+### Stage 2: MinIO → S3 (done, see lesson 0018)
 
 - Added: `storage.tf` (bucket named after the account id, `force_destroy`, public access
   block), an inline policy in `iam.tf` (ListBucket on the bucket, Put/GetObject on `/*`),
@@ -85,7 +85,22 @@ stages edit and add to the files here.
 - Option: start remote state next (an S3 backend with `use_lockfile = true`, no DynamoDB
   needed). That fixes the device-switching problem above sooner than stage 5.
 
-### Stage 3: Mongo → MongoDB Atlas free tier (M0)
+### Stage 3: Mongo → MongoDB Atlas free tier (M0) (code written, see lesson 0019)
+
+What was built (plan below kept for the reasoning):
+- `database.tf`: Atlas project + M0 cluster (`AP_SOUTHEAST_1`), `aws_eip` on the server, an
+  access-list entry for that IP, database user `capture-to-text-app` (readWrite on
+  `capturetotext`), SSM SecureString `/capture-to-text/mongo-uri`. The password is an
+  `ephemeral "random_password"` passed only to write-only args (`password_wo`, `value_wo`), so
+  it is never in state. To rotate it, bump BOTH `*_wo_version` to 2 together.
+- `iam.tf`: `ssm:GetParameter` on that parameter. Boot script writes `/opt/mongo.env` (root
+  only, `set +x`); api and worker load it with `env_file`. mongo container and volume removed.
+- Every Terraform command now needs `$env:MONGODB_ATLAS_CLIENT_ID` and
+  `$env:MONGODB_ATLAS_CLIENT_SECRET` set, and `terraform.tfvars` with `atlas_org_id`.
+- No push needed (no file the server clones changed). Plan: about 9 to add, 0 to change,
+  2 to destroy. Expect 5 services. Only `validate` has run so far.
+
+Original plan:
 
 - Terraform: `mongodbatlas` provider with an Atlas API key (a programmatic key, kept out of
   git). Creates the project, an M0 cluster in AWS `ap-southeast-1`, a database user, and an
@@ -131,7 +146,8 @@ stages edit and add to the files here.
 - Published lessons: 0016 Terraform first contact
   (https://claude.ai/artifact/WAMVq4YjTydVMuGz2Miwp6), 0017 One server in a VPC
   (https://claude.ai/artifact/EySFyRLTkPhHcHuSfgQHaJ), 0018 Images in S3
-  (https://claude.ai/artifact/VQ2Bm7CfFmn53wE4aMvwZA). The lesson sources and the teaching
+  (https://claude.ai/artifact/VQ2Bm7CfFmn53wE4aMvwZA), 0019 Data in Atlas
+  (https://claude.ai/artifact/XwQNLi3Joxt1uzRSka9vJy). The lesson sources and the teaching
   rules (`NOTES.md`) live in the separate `Learning/` folder, which isn't in this repo.
 - Use the same AWS terms as "AWS Foundations: the KedaiPay story"
   (https://claude.ai/artifact/Uz8oRDzCAzKrxidnn3hkX2): local line, IGW line, borrow the role,

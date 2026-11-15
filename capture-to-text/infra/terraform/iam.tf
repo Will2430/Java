@@ -44,6 +44,24 @@ resource "aws_iam_role_policy" "images" {
   })
 }
 
+# Lets the boot script read the Mongo connection string. AmazonSSMManagedInstanceCore above
+# already allows reading every parameter; this names the one this server actually needs, so
+# it still works if that broad policy is ever swapped for a narrower one. No kms:Decrypt is
+# needed: the parameter uses the AWS-managed SSM key, which lets SSM decrypt for the account.
+resource "aws_iam_role_policy" "mongo_uri" {
+  name = "capture-to-text-mongo-uri"
+  role = aws_iam_role.server.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "ssm:GetParameter"
+      Resource = aws_ssm_parameter.mongo_uri.arn
+    }]
+  })
+}
+
 # The wrapper that attaches a role to an EC2 server (the console makes this for you).
 resource "aws_iam_instance_profile" "server" {
   name = "capture-to-text-server"

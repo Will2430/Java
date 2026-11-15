@@ -1,6 +1,6 @@
 # Layered on top of docker-compose.yml on the EC2 server (user_data.sh.tftpl runs both).
 # On the server every piece is a container on one Docker network, so each one finds the
-# others by service name (kafka, mongo, minio...) instead of localhost or
+# others by service name (kafka, keycloak, redis...) instead of localhost or
 # host.minikube.internal. Relative paths (build: ., ./worker) resolve from the folder of
 # the first file, docker-compose.yml.
 # Terraform fills in the bucket and region placeholders before the server sees this file
@@ -23,19 +23,13 @@ services:
   redis:
     restart: unless-stopped
 
-  # On the PC Mongo is a Windows service; here it's one more container.
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    # Mongo's cache would otherwise claim about half the server's 8 GiB.
-    command: ["--wiredTigerCacheSizeGB", "0.5"]
-    volumes:
-      - mongo-data:/data/db
-
   api:
     build: .
     restart: unless-stopped
-    depends_on: [kafka, mongo, keycloak, redis]
+    depends_on: [kafka, keycloak, redis]
+    # The database is MongoDB Atlas now. The boot script writes its connection string
+    # (SPRING_DATA_MONGODB_URI) to this root-only file, so the password never sits in this one.
+    env_file: /opt/mongo.env
     # 127.0.0.1 only: the Session Manager tunnel arrives from inside the server.
     ports:
       - "127.0.0.1:8080:8080"
@@ -45,7 +39,6 @@ services:
      # JVM often uses the available memory and container limits to determine how large its heap can grow, which is commonly 25% of its memory. 
      # Capping it provides JVM with the leeway to use the remaining memory for thread stacks, class metadata etc.
       JAVA_TOOL_OPTIONS: "-Xmx768m"
-      SPRING_DATA_MONGODB_URI: "mongodb://mongo:27017/capturetotext"
       SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
       # The MinIO client speaks S3, so only the address changes. Empty keys make
       # MinioConfig borrow the server's role instead (see its comment).
@@ -62,16 +55,13 @@ services:
   worker:
     build: ./worker
     restart: unless-stopped
-    depends_on: [kafka, mongo]
+    depends_on: [kafka]
+    env_file: /opt/mongo.env
     environment:
       JAVA_TOOL_OPTIONS: "-Xmx768m"
-      SPRING_DATA_MONGODB_URI: "mongodb://mongo:27017/capturetotext"
       SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
       MINIO_ENDPOINT: "https://s3.${region}.amazonaws.com"
       MINIO_REGION: "${region}"
       MINIO_BUCKET: "${bucket}"
       MINIO_ACCESS_KEY: ""
       MINIO_SECRET_KEY: ""
-
-volumes:
-  mongo-data:
