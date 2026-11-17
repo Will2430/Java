@@ -8,6 +8,12 @@
 5. [Statistics (SPC)](#5-statistics-spc)
 6. [.NET: DbContext and DbContextFactory](#6-net-dbcontext-and-dbcontextfactory)
 7. [Spring Annotations and Code Walkthrough](#7-spring-annotations-and-code-walkthrough)
+8. [Stage 4 Deploy: Reverse Proxy and First Login](#8-stage-4-deploy-reverse-proxy-and-first-login)
+9. [DynamoDB vs Cassandra](#9-dynamodb-vs-cassandra)
+10. [Memory Page](#10-memory-page)
+11. [Protocol Layers](#11-protocol-layers)
+12. [DNS](#12-dns)
+13. [Atlas Terraform Specification](#13-atlas-terraform-specification)
 
 ---
 
@@ -691,3 +697,217 @@ All change from `localhost` together; one leftover breaks login at the step that
 > **Note:** Caddy talks plain HTTP to Keycloak, so Keycloak must trust Caddy's `X-Forwarded-*` headers (`KC_PROXY_HEADERS=xforwarded`) to know the original request was HTTPS.
 
 > **Note:** Needs an **Elastic IP** (DNS points at a fixed IP; the public IP changes on every stop/start), and port **80 stays open** for Let's Encrypt's domain check.
+
+---
+
+## 9. DynamoDB vs Cassandra
+
+### 9.1 Keys
+
+- **DynamoDB** – Partition key + sort key + secondary indexes
+- **Cassandra** – Partition key + clustering columns + query-specific tables
+
+Both use partitioning and ordering keys. Dynamo uses a **Partition key** (the key to identify an item/entry with); this key is used similar to Kafka partitioning, in how the same hash lands in the same partition. A **Sort key** is used to differentiate items within the same partition from one another, and also determines their order within it (which is what enables range queries like `begins_with` / `between`), e.g.:
+
+| PK           | SK        | Status  | Total |
+|--------------|-----------|---------|-------|
+| CUSTOMER#001 | ORDER#001 | PAID    | 150   |
+| CUSTOMER#001 | ORDER#002 | PENDING | 200   |
+
+This eases query retrieval that requires exact key matching, e.g. you can query the PK to get all orders and attributes associated with them, OR with PK & SK, only that particular order.
+
+**GSI (Global Secondary Index)** is a secondary key you can use for querying, e.g. if we want to query by Status instead, we can make status the PK and order the SK, which is just another indexed access path for the same items.
+
+> **Note:** GSIs only support eventually consistent reads, and have their own throughput/capacity.
+
+### 9.2 Cassandra: clustering columns
+
+Cassandra uses a PK with **clustering columns**, and its CQL looks similar to Postgres on the surface, in how it also has the idea of tables, partitions within them via the PK, and sorting via the clustering columns (but no joins, and no filtering on arbitrary columns without an index), e.g.:
+
+**Cassandra table: `orders_by_customer`** — Partition key / customer_id: `CUSTOMER#001`
+
+| Order date | Order ID | Status  | Total |
+|------------|----------|---------|-------|
+| Oct 01     | 001      | PAID    | 150   |
+| Oct 05     | 002      | PENDING | 200   |
+
+### 9.3 Querying by another attribute
+
+Both DB options can retrieve records based on a range within a partition; what differs between them is their overall data model and query capabilities. E.g. when we want to retrieve orders with a particular status, Dynamo can use a GSI, whilst the idiomatic Cassandra approach is to create a new table with duplicated data catered for that query specifically (secondary indexes/materialized views exist, but have limitations), e.g.:
+
+**`orders_by_status`**
+- PK: `status`
+- Clustering columns: `order_date`, `order_id`
+
+> ⚠️ Partitioning by `status` is a hot-partition risk in **both** DBs (low cardinality, e.g. everything `PENDING` lands in one partition). Usually mitigated by sharding the key (`PENDING#3`) or adding a time bucket.
+
+> **Note that** although Cassandra's storage structure is called *"wide-column"*, realistically it is still row-oriented, unlike columnar storage like Redshift.
+
+### 9.4 Choosing between them
+
+One may prefer one over the other due to the dimensions each option provides and their requirements from facets like infra, data modelling, querying, consistency (deciding how many replicas must acknowledge a write/read before the operation is considered successful, vs eventually consistent reads), portability etc., e.g.:
+
+- Cassandra's peer-to-peer distributed cluster vs Dynamo's AWS-managed distributed service
+- Cassandra's finer control over nodes, replication and consistency vs AWS-managed infrastructure and replication
+- Query pattern: CQL, PK/CK, query-specific tables vs PK/SK and GSI
+
+Dynamo is more preferred for an **e-commerce application** that is built on the AWS ecosystem, wants minimal database infra management that is scalable, and suits the key-based lookup pattern. Cassandra is more preferred for a **global IoT platform** because of finer control over cluster topology and the facets listed above.
+
+---
+
+## 10. Memory Page
+
+### 10.1 Pages and virtual addresses
+
+A fixed-size, contiguous block of virtual memory (typically 4 KB on x64 Windows) that the OS manages as a unit. If memory is a huge collection of numbered byte slots, then a page is a managed chunk of those slots. The physical counterpart in RAM is called a **page frame**.
+
+A pointer in the code points to some **virtual address**, which isn't necessarily the actual physical address in RAM, and since each process has its own virtual address space, Windows maintains per-process **page tables** which the CPU's MMU uses to translate VA into PA.
+
+### 10.2 Paging file and views
+
+- **Paging file** – a hidden system file on storage that Windows uses as an extension to RAM. It is the backing store for private committed memory (Memory belonging to one process only, e.g. its thread stack, heaps etc. Committed referes to how Windows reserves memory: claims a range of VA -> guarantees the backing store.) and pagefile-backed mappings (a mapping of an actual file is backed by that file instead).
+- **View** – exposes/maps a virtual address range in our process, through which our code can access the mapping. But Windows doesn't necessarily have RAM allocated for every page in that range, yet.
+
+> **Note:** PTE (Page Table Entry) is one entry in the page table, consisting of a bit for signifying whether the page is currently resident in RAM or not, the frame number it maps to, protection/permission bits, and accessed bits for indicating whether the page has been written to or touched recently.
+
+### 10.3 Page faults
+
+The process of physical pages being allocated in RAM is as follows:
+
+1. CPU attempts to access some virtual address
+2. MMU discovers the required page isn't mapped to a resident physical page yet (PTE not valid) 
+3. CPU raises a **page fault** exception, handled by the Windows memory manager
+4. Windows takes a frame from its free/zeroed page lists (trimming working sets if none are free), fills it if needed (from the paging file/backing file, or zero-filled for a brand-new page), and updates the PTE to map the virtual address to that frame
+5. CPU re-executes the faulting instruction
+
+> **Note:** multiple virtual address ranges can translate onto the same physical page; the page table essentially maps those addresses onto the same frame.
+
+---
+
+## 11. Protocol Layers
+
+### 11.1 Request path
+
+1. Client's HTTPS request (the actual request is still HTTP)
+2. Browser establishes TCP with server
+3. TLS encryption over that TCP connection
+4. Browser sends the HTTP request within the established encrypted TLS channel (the raw request gets encrypted with TLS)
+5. NLB/ALB/backend terminates the TLS, decrypting the record using the key derived during the handshake
+6. *(optionally encrypt for HTTPS again)*
+7. Backend
+
+> **Note that** L7, L4, and the backend can all terminate TLS, so the choice mainly lies in configuration needs.
+
+### 11.2 OSI model
+
+The way you read the **OSI (Open Systems Interconnection)** model changes depending on whether you're the sender/receiver. Traditionally the model is as follows:
+
+| Layer | Name         | Example / Note |
+|-------|--------------|----------------|
+| L7    | Application  | HTTP. ALB is classified as L7 due to its ability to interpret application-layer HTTP information and make routing decisions |
+| L6    | Presentation | Encryption, *"conceptually"* (TLS doesn't map cleanly, it sits somewhere between L4 and L7) |
+| L5    | Session      | |
+| L4    | Transport    | TCP, UDP. NLB is L4 as it makes forwarding decisions using transport-layer info like IP, port, protocol etc. |
+| L3    | Network      | IP |
+| L2    | Data Link    | Ethernet / Wi-Fi |
+| L1    | Physical     | Wires |
+
+> **Note that** it is the underlying networking stack that's mainly responsible for the TCP/IP/TLS operations, distinct from NLB responsibilities (though NLB is capable of TLS termination depending on configuration).
+
+### 11.3 OSI vs real architecture
+
+This model only describes how network protocols operate and **does not translate** directly into how the actual architecture looks. E.g. even though OSI posits that a sender creating an HTTP request would be at L7, this sequential ladder doesn't really hold when real architecture is involved.
+
+E.g. NLB is known to operate at L4, forwarding TCP/UDP/TLS traffic without inspecting it (HTTP included). Separately, it can optionally be put in front of an ALB (e.g. for static IPs or PrivateLink). Under the **NLB → ALB** setting with a TCP listener, the NLB doesn't terminate TCP, it forwards at the connection level, so the browser's TCP connection effectively ends at the ALB, and the ALB is also the TLS endpoint with which the browser does the handshake. ALB then terminates the TLS, so it can inspect the raw HTTP request and route it based on the listener rules to the backend.
+
+On the receiving backend, data travels from L1 back to L7, in a manner that is completely independent of whether the network architecture uses an NLB, ALB, or neither. This process is called **decapsulation** (encapsulation is L7 → L1), where each layer strips its own header and reconstructs what the sender sent. E.g. the backend's L4 transport layer (NOT NLB) processes the TCP header from the ALB's connection (as ALB acts as a proxy that establishes a separate connection to the backend). Then if HTTPS is used, the backend's TLS implementation needs to decrypt TLS, and only then can the application code process the HTTP request.
+
+**In summary:** OSI is merely a description of what each layer consists of, not a definite ladder that a network architecture needs to follow.
+
+---
+
+## 12. DNS
+
+### 12.1 Zones and resolution
+
+A **DNS zone** is an administrative container which holds the DNS records for a particular domain, where the domain/subdomain names and their records are grouped together (Route 53 calls this a *hosted zone*).
+
+Once you purchase a domain like `kedaipay.my`, you can configure subdomains for it in your DNS provider. E.g. in Route 53, a record name and type is attached to the domain, so when a user tries `pay.kedaipay.my`, the resolver goes root → `.my` **TLD** servers → NS delegation to Route 53's name servers. Route 53 then returns the `A` (IPv4) record (an **Alias** record, since an ALB has no fixed IP), and the browser connects to the ALB with that address.
+
+**Zone apex** is the top-level name of a DNS zone, which is actually just the domain name itself (e.g. `kedaipay.my`).
+
+### 12.2 SOA record
+
+**SOA (Start of Authority)** is a record that contains the administrative metadata and sync info about a zone. A simplified one may look like:
+
+- **Primary name server** – the zone's primary authoritative name server (in Route 53, one of its assigned `awsdns` servers). Resolvers find the authoritative servers via the zone's NS records.
+- **Responsible party** – the party responsible for the zone
+- **Serial number** – version number for the zone; any change in the zone increments it to indicate the zone has changed. A secondary DNS server can use this number to determine whether it needs to synchronize its copy. *(Route 53 doesn't use zone transfers, so I believe it doesn't auto-increment this)*
+- **Refresh** – how long a secondary DNS server waits before checking whether the primary has changed
+- **Retry** – how long a secondary waits before retrying after a failed refresh
+- **Expire** – how long a secondary keeps serving the zone without reaching the primary before it stops answering for it
+- **Minimum** – e.g. when someone queries a non-existent DNS record/subdomain, the resolver can cache this negative result for this duration, to prevent repeated queries for the same non-existent name
+
+---
+
+## 13. Atlas Terraform Specification
+
+### 13.1 Cluster layout
+
+The **replication specs** are defined per shard (sharding = the database is split into smaller portions); one spec entry describes how one shard should be deployed.
+
+**Electable specs** define the electable nodes (nodes that can vote and become primary, vs read-only/analytics nodes) within that region for a given shard. M0 is a shared-tier, fixed 3-node replica set (no `node_count` to set); on dedicated tiers, `node_count` = 3, 5 or 7.
+
+**Priority** refers to how much *"this"* region is preferred for hosting the primary node (1–7, 7 being highest). With a single region it must be 7, as there is no other region to compare to.
+
+### 13.2 Database user and password
+
+**`auth_database_name`** is the DB Mongo uses for storing and verifying user logins. Upon apply, Atlas creates the user defined in the resource block and stores it in the cluster's `admin` DB. The cluster then uses that credential to verify every subsequent connection.
+
+In the first `terraform apply`, after Terraform generates the password, the SSM parameter creates/stores the connection string containing username + password, which the user data script later uses at boot to inject into the env file the container uses.
+
+> ⚠️ `random_password` is not ephemeral, it's stored in plaintext in Terraform state, so the state must be protected.
+
+### 13.3 Connection string, SRV and the driver
+
+**SRV** is a DNS record (Service Record) which helps MongoDB's driver look up the database servers it can connect to. E.g. if Atlas changes the underlying server infra/addresses, SRV allows the driver to discover the relevant servers through a DNS lookup itself, as Atlas updates the SRV records along with said changes, without anyone manually maintaining the list of addresses. I.e. the `mongodb+srv` in the connection string (the address and instructions an application uses to connect to a DB cluster) is the scheme defining that. The driver also reads a TXT record for options like `authSource`/`replicaSet`.
+
+**`${...}`** in Terraform means *process this expression and paste the result here*. In this case, `replace()` swaps the `mongodb+srv://` part of the connection string Atlas produced with one that has the username + password + DB name + write properties:
+
+- **`retryWrites=true`** – retry writes once if the primary changes midway
+- **`w=majority`** – only considered a successful write once the majority of nodes have it (e.g. 2/3)
+
+> **Note:** The password must be URL-encoded if it contains special characters.
+
+The driver enables TLS by default for `+srv` connections because the `mongodb+srv` scheme specifies it, not because of the `+` sign itself.
+
+The **driver** is the software library that knows how to communicate with Mongo, whilst the **client** (`MongoClient`, part of the driver's API) is the object the application uses to communicate with it. Hence, the driver mentioned above is the MongoDB Java Driver, which the pom's Maven dependency brings in. Spring Boot (not the driver) reads the MongoDB URI from `application.properties` and builds the client with it.
+
+### 13.4 SSM and the `aws/ssm` KMS key
+
+Every AWS account gets a key named **`aws/ssm`**, which AWS manages for SSM, and anyone in this account is allowed to use it, but only through the SSM service (no additional decrypt policy is needed, as KMS decryption is already part of the key policy). The connection string is encrypted by KMS. When we retrieve the value decrypted (`--with-decryption`), SSM checks the IAM policy for the `ssm:GetParameter` action and whether the resource in question is allowed under this action. If yes, it tells KMS to decrypt and returns the connection string as a plain string.
+
+### 13.5 Boot script: `templatefile()` and Bash
+
+**`user_data`** in `server.tf` passes a map of names to `templatefile()` which the template script can use; each `${}` is substituted with the values defined on the right. *(Bash's own `${VAR}` must be escaped as `$${VAR}` in the template.)*
+
+**`$(...)`** in Bash means *run the command within and use whatever it prints*. E.g. `ssm get-parameter` does the SSM request, signed with the instance role's temporary credentials, and SSM replies with the decrypted string in JSON. `--query Parameter.Value` then picks out just the `Value` field, and `--output text` outputs it as text without quotes. `echo` prints it, and `>` redirects the output into the file `/opt/mongo.env`, which is declared in `compose.server`, which Compose uses to inject into the `api` and `worker` containers.
+
+### 13.6 Bash flags
+
+- **`-e`** – Exits on error, stops the script when a command fails
+- **`-u`** – Unset var, reports an unbound variable rather than substituting an empty string
+- **`-x`** – Prints commands as the script executes them (we turn this off with `set +x` so that the password is not logged)
+- **`-o pipefail`** – Detects pipeline failure (`|` works by passing the output of one command as input to another). E.g. when we chain two operations and the latter succeeds, without this flag Bash uses the exit status of the LAST command in the pipeline, i.e. we need this flag to return a non-zero status if any command in the pipeline fails.
+
+### 13.7 umask
+
+Controls which permissions are removed from newly created files/directories. E.g. `umask 077`: each digit is operated on as binary, and the default base permission for files is usually `rw-rw-rw-` (owner, group, others), where r = 4, w = 2, x = 1. umask does `666 & ~077`:
+
+```
+  110 110 110
+& 111 000 000   (~077)
+= 110 000 000   = 600
+```
+
+I.e. only the file owner retains r & w, whilst group and others are removed. (Directories start from 777, so they become 700.) The umask must be set *before* the file is created.
