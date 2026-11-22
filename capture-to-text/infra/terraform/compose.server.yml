@@ -3,7 +3,7 @@
 # others by service name (kafka, keycloak, redis...) instead of localhost or
 # host.minikube.internal. Relative paths (build: ., ./worker) resolve from the folder of
 # the first file, docker-compose.yml.
-# Terraform fills in the bucket and region placeholders before the server sees this file
+# Terraform fills in the bucket, region and host placeholders before the server sees this file
 # (templatefile in server.tf), so compose's own dollar-brace variables can't be used here.
 services:
   kafka:
@@ -19,18 +19,44 @@ services:
 
   keycloak:
     restart: unless-stopped
+    environment:
+      # The address browsers use, so every token's "iss" says https://auth.<ip>.sslip.io.
+      KC_HOSTNAME: "https://${auth_host}"
+      # Caddy talks to Keycloak over plain http. These headers (added by Caddy) tell Keycloak
+      # the browser really used https and what the browser's IP was. Without them, Keycloak
+      # treats every request as plain http from Caddy's address.
+      KC_PROXY_HEADERS: "xforwarded"
 
   redis:
     restart: unless-stopped
 
+  # The front door: the only container with ports open to the internet (80/443, see web.tf).
+  # Settings in /opt/Caddyfile. Certificates are kept in the caddy-data volume, so a restart
+  # doesn't ask Let's Encrypt again (it limits repeat requests).
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    depends_on: [api, keycloak]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /opt/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
   api:
-    build: .
+    build:
+      context: .
+      # Read at build time, not run time: the React code runs in the browser, so this value
+      # has to be written into the JavaScript files (see the Dockerfile).
+      args:
+        VITE_KEYCLOAK_URL: "https://${auth_host}"
     restart: unless-stopped
     depends_on: [kafka, keycloak, redis]
-    # The database is MongoDB Atlas now. The boot script writes its connection string
-    # (SPRING_DATA_MONGODB_URI) to this root-only file, so the password never sits in this one.
-    env_file: /opt/mongo.env
-    # 127.0.0.1 only: the Session Manager tunnel arrives from inside the server.
+    # The Atlas connection string and both Stripe keys. refresh-secrets.sh writes this
+    # root-only file from SSM, so no secret ever sits in this one.
+    env_file: /opt/secrets.env
+    # 127.0.0.1 only: browsers come in through Caddy. This port is for testing from the server shell.
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -47,16 +73,19 @@ services:
       MINIO_BUCKET: "${bucket}"
       MINIO_ACCESS_KEY: ""
       MINIO_SECRET_KEY: ""
-      # Same split as k8s/configmap.yaml: keys fetched by service name, issuer stays
-      # http://localhost:8180 because that's where the browser logs in (through the tunnel).
+      # Same split as k8s/configmap.yaml: signing keys are fetched by service name (inside the
+      # server), but the issuer must match KC_HOSTNAME above, the address the browser logs in at.
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: "http://keycloak:8080/realms/capture-to-text/protocol/openid-connect/certs"
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: "https://${auth_host}/realms/capture-to-text"
+      # Where Stripe's checkout page sends the user back after paying or cancelling.
+      APP_PUBLIC_BASE_URL: "https://${app_host}"
       SPRING_DATA_REDIS_HOST: "redis"
 
   worker:
     build: ./worker
     restart: unless-stopped
     depends_on: [kafka]
-    env_file: /opt/mongo.env
+    env_file: /opt/secrets.env
     environment:
       JAVA_TOOL_OPTIONS: "-Xmx768m"
       SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
@@ -65,3 +94,6 @@ services:
       MINIO_BUCKET: "${bucket}"
       MINIO_ACCESS_KEY: ""
       MINIO_SECRET_KEY: ""
+
+volumes:
+  caddy-data:

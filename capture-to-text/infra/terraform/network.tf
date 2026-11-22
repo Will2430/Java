@@ -41,12 +41,12 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# No inbound rules at all: you reach the app through Session Manager, which the
-# server connects out to. Replies to the server's own outbound calls still get in,
-# because a security group is stateful.
+# Inbound: only 80 and 443 (rules in web.tf). The shell still comes through Session
+# Manager, which the server connects out to. Replies to the server's own outbound calls
+# still get in, because a security group is stateful.
 resource "aws_security_group" "server" {
   name        = "capture-to-text-server"
-  description = "No inbound; all outbound"
+  description = "HTTP and HTTPS in; all outbound"
   vpc_id      = aws_vpc.main.id
 }
 

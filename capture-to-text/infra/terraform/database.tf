@@ -32,10 +32,17 @@ resource "mongodbatlas_advanced_cluster" "main" {
 }
 
 # A fixed public IP for the server. The automatic one changes on every stop/start, which
-# would silently lock the server out of Atlas's access list below.
+# would silently lock the server out of Atlas's access list below, and change the web
+# address in web.tf. It's attached in a separate resource because the server's boot script
+# needs this IP (for the address), so the IP has to exist before the server does.
 resource "aws_eip" "server" {
-  domain   = "vpc"
-  instance = aws_instance.server.id
+  domain = "vpc"
+  tags   = { Name = "capture-to-text-server" }
+}
+
+resource "aws_eip_association" "server" {
+  allocation_id = aws_eip.server.id
+  instance_id   = aws_instance.server.id
 }
 
 # Atlas's firewall: only this one address may connect.

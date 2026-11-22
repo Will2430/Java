@@ -2,13 +2,14 @@ output "instance_id" {
   value = aws_instance.server.id
 }
 
-# Run each in its own terminal and keep it open; then browse http://localhost:8080.
-output "tunnel_api" {
-  value = "aws ssm start-session --target ${aws_instance.server.id} --document-name AWS-StartPortForwardingSession --parameters portNumber=8080,localPortNumber=8080"
+# Open this in a browser (alice/alice). No tunnels needed any more.
+output "app_url" {
+  value = "https://${local.app_host}"
 }
 
-output "tunnel_keycloak" {
-  value = "aws ssm start-session --target ${aws_instance.server.id} --document-name AWS-StartPortForwardingSession --parameters portNumber=8180,localPortNumber=8180"
+# Paste this into Stripe's dashboard as the webhook endpoint.
+output "stripe_webhook_url" {
+  value = "https://${local.app_host}/api/webhooks/stripe"
 }
 
 output "shell" {
@@ -16,7 +17,7 @@ output "shell" {
 }
 
 output "server_ip" {
-  description = "The fixed IP that Atlas's access list allows."
+  description = "The fixed IP that Atlas's access list allows, and that the sslip.io names point at."
   value       = aws_eip.server.public_ip
 }
 

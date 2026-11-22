@@ -19,18 +19,19 @@ cat > /opt/compose.server.yml <<'COMPOSE'
 ${compose_server}
 COMPOSE
 
-# Fetch the Atlas connection string into a root-only file that compose.server.yml loads
-# (env_file). set +x first: tracing would print the password into cloud-init-output.log.
-set +x
-umask 077
-mongo_uri=$(aws ssm get-parameter --region ${region} --name ${mongo_uri_param} \
-  --with-decryption --query Parameter.Value --output text)
-echo "SPRING_DATA_MONGODB_URI=$mongo_uri" > /opt/mongo.env
-unset mongo_uri
-umask 022
-set -x
+cat > /opt/Caddyfile <<'CADDY'
+${caddyfile}
+CADDY
 
-# Builds the API and worker images from the Dockerfiles, then starts everything.
-# restart: unless-stopped brings the containers back after a stop/start.
-cd /opt/app/capture-to-text
-docker compose -f docker-compose.yml -f /opt/compose.server.yml up -d --build
+# The realm file only allows the app's localhost address. Swap in the public one, or Keycloak
+# rejects the login redirect ("Invalid redirect_uri"). It's read on Keycloak's first start.
+sed -i 's|http://localhost:8080|https://${app_host}|g' \
+  /opt/app/capture-to-text/config/keycloak/capture-to-text-realm.json
+
+# Fetches the secrets and starts the containers. It's kept as a file so it can be run again
+# after a secret changes in SSM.
+cat > /opt/refresh-secrets.sh <<'SCRIPT'
+${refresh_secrets}
+SCRIPT
+chmod 700 /opt/refresh-secrets.sh
+/opt/refresh-secrets.sh

@@ -1,0 +1,15 @@
+# Caddy's settings. One block per web address: Caddy gets a free certificate for each name
+# on its own (Let's Encrypt, or ZeroSSL if that fails) and redirects http:// to https://.
+
+${app_host} {
+	reverse_proxy api:8080
+}
+
+${auth_host} {
+	# Keycloak's admin console and the admin realm stay off the internet. They still use the
+	# default admin/admin login. Only the app's login pages (/realms/capture-to-text, /resources) are public.
+	@admin path /admin* /realms/master*
+	respond @admin 404
+
+	reverse_proxy keycloak:8080
+}

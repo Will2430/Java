@@ -25,15 +25,27 @@ resource "aws_instance" "server" {
     encrypted   = true
   }
 
-  # Runs once, as root, on first boot. compose.server.yml is pasted into the script.
+  # Runs once, as root, on first boot. compose.server.yml, the Caddyfile and the secrets
+  # script are pasted into it. Only the secrets' names travel here, never their values.
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    repo_url        = var.repo_url
-    git_ref         = var.git_ref
-    region          = var.region
-    mongo_uri_param = aws_ssm_parameter.mongo_uri.name
+    repo_url = var.repo_url
+    git_ref  = var.git_ref
+    app_host = local.app_host
     compose_server = templatefile("${path.module}/compose.server.yml", {
-      bucket = aws_s3_bucket.images.bucket
-      region = var.region
+      bucket    = aws_s3_bucket.images.bucket
+      region    = var.region
+      app_host  = local.app_host
+      auth_host = local.auth_host
+    })
+    caddyfile = templatefile("${path.module}/Caddyfile.tftpl", {
+      app_host  = local.app_host
+      auth_host = local.auth_host
+    })
+    refresh_secrets = templatefile("${path.module}/refresh_secrets.sh.tftpl", {
+      region                      = var.region
+      mongo_uri_param             = aws_ssm_parameter.mongo_uri.name
+      stripe_secret_key_param     = aws_ssm_parameter.stripe_secret_key.name
+      stripe_webhook_secret_param = aws_ssm_parameter.stripe_webhook_secret.name
     })
   })
   # The script only runs on first boot, so a changed script means a new server.

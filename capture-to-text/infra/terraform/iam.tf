@@ -44,20 +44,25 @@ resource "aws_iam_role_policy" "images" {
   })
 }
 
-# Lets the boot script read the Mongo connection string. AmazonSSMManagedInstanceCore above
-# already allows reading every parameter; this names the one this server actually needs, so
-# it still works if that broad policy is ever swapped for a narrower one. No kms:Decrypt is
-# needed: the parameter uses the AWS-managed SSM key, which lets SSM decrypt for the account.
-resource "aws_iam_role_policy" "mongo_uri" {
-  name = "capture-to-text-mongo-uri"
+# Lets the secrets script (refresh_secrets.sh.tftpl) read the app's three secrets.
+# AmazonSSMManagedInstanceCore above already allows reading every parameter; this names the
+# ones this server actually needs, so it still works if that broad policy is ever swapped for
+# a narrower one. No kms:Decrypt is needed: the parameters use the AWS-managed SSM key, which
+# lets SSM decrypt for the account.
+resource "aws_iam_role_policy" "app_secrets" {
+  name = "capture-to-text-app-secrets"
   role = aws_iam_role.server.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = "ssm:GetParameter"
-      Resource = aws_ssm_parameter.mongo_uri.arn
+      Effect = "Allow"
+      Action = "ssm:GetParameter"
+      Resource = [
+        aws_ssm_parameter.mongo_uri.arn,
+        aws_ssm_parameter.stripe_secret_key.arn,
+        aws_ssm_parameter.stripe_webhook_secret.arn,
+      ]
     }]
   })
 }

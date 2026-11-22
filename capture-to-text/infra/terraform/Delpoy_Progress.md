@@ -11,8 +11,8 @@ copies, so `git log` and the notes below are the history.
 |---|-------|--------|
 | 1 | Everything on one EC2 server (docker compose), reached through Session Manager tunnels | **Done, works end to end** (upload goes PENDING → DONE) |
 | 2 | MinIO → S3 | **Done, applied and verified** (upload lands in the S3 bucket). Lesson 0018: https://claude.ai/artifact/VQ2Bm7CfFmn53wE4aMvwZA |
-| 3 | Mongo container → MongoDB Atlas free tier (`mongodbatlas` provider) | **Code written, not applied** (needs Atlas account + service account). Lesson 0019: https://claude.ai/artifact/XwQNLi3Joxt1uzRSka9vJy |
-| 4 | HTTPS + Stripe keys/webhooks | |
+| 3 | Mongo container → MongoDB Atlas free tier (`mongodbatlas` provider) | **Code written; first apply failed** (Atlas `401 Unauthorized` on the project, after the old server had already been destroyed). Lesson 0019: https://claude.ai/artifact/XwQNLi3Joxt1uzRSka9vJy |
+| 4 | HTTPS + Stripe keys/webhooks | **Code written, not applied** (AWS account suspended for payment verification, 2026-11-22). Applies together with stage 3. Lesson 0020: https://claude.ai/artifact/3PD8BMNAkLz2qnNKMXRzTu |
 | 5 | ECS Fargate + ALB, remote state | |
 
 Credit-safe rules for this free-plan account: no EKS, no NAT gateway, and no AWS
@@ -43,17 +43,22 @@ server when you're not using it.
 
 Run / use / stop:
 
+⚠ Every `apply`, including the stop below, also applies any code that hasn't been applied
+yet. That's how the stop on 2026-11-16 replaced (deleted) the server for stage 3. Run
+`terraform plan` first and read it.
+
 ```powershell
 terraform apply                              # start (or apply changes)
-terraform output                             # prints tunnel_api, tunnel_keycloak, shell commands
-# run tunnel_api and tunnel_keycloak in two terminals, browse http://localhost:8080 (alice/alice)
-terraform apply -var server_running=false    # STOP: keeps the disk, built images and data; only disk is billed
+terraform output                             # from stage 4: app_url, stripe_webhook_url, shell
+# browse the app_url (alice/alice); the tunnels were removed in stage 4
+terraform apply -var server_running=false    # STOP: keeps the disk, built images and data; disk + Elastic IP are billed
 terraform apply                              # start again; containers come back (restart: unless-stopped)
 terraform destroy                            # deletes everything, including the S3 bucket and its images
 ```
 
 On the server: `sudo tail -n 20 /var/log/cloud-init-output.log`,
-`sudo docker compose -p capture-to-text ps` (5 services from stage 3: no minio, no mongo).
+`sudo docker compose -p capture-to-text ps` (6 services from stage 4: kafka, keycloak, redis,
+caddy, api, worker; no minio, no mongo).
 
 ## ⚠ Switching devices: Terraform state is local
 
@@ -114,7 +119,51 @@ Original plan:
 - Remove the mongo service. Atlas is a replica set, so multi-document transactions become
   possible, but keep the embedded outbox as it is.
 
-### Stage 4: HTTPS + Stripe
+### Stage 4: HTTPS + Stripe (code written, see lesson 0020)
+
+What was built:
+- Address: free **sslip.io** names made from the Elastic IP (`app.13-229-x-x.sslip.io`,
+  `auth.…`). Nothing to buy. `locals` in `web.tf`. The EIP is now its own resource plus an
+  `aws_eip_association`, because the boot script needs the IP before the server exists.
+- `web.tf`: inbound 80 + 443 rules, and two SSM SecureStrings
+  (`/capture-to-text/stripe-secret-key`, `/capture-to-text/stripe-webhook-secret`) created
+  with the placeholder `set-me`. You put the real values in with the CLI; Terraform never
+  overwrites them (write-only value, version stays 1).
+- Caddy container (`caddy:2.10`, `Caddyfile.tftpl`): HTTPS certificates, app host → api:8080,
+  auth host → keycloak:8080, with `/admin*` and `/realms/master*` returning 404.
+- Keycloak: `KC_HOSTNAME=https://auth…`, `KC_PROXY_HEADERS=xforwarded`. The boot script
+  `sed`s the realm's `http://localhost:8080` to `https://app…`.
+- API: `ISSUER_URI` and `APP_PUBLIC_BASE_URL` set to the public names. The `Dockerfile` now
+  takes `ARG VITE_KEYCLOAK_URL` for the React build (**needs a push to main**).
+- Secrets: `refresh_secrets.sh.tftpl` → `/opt/refresh-secrets.sh` writes `/opt/secrets.env`
+  (Mongo URI + both Stripe keys) and runs `docker compose up`. Rerun it after changing a
+  secret. `iam.tf` policy renamed `app_secrets`, covering all three parameters.
+- Outputs: tunnels removed; `app_url` and `stripe_webhook_url` added.
+- Cost: the Elastic IP is billed (about $3.60/month) even while the server is stopped.
+- Not reachable any more: the Keycloak admin console (blocked in Caddy, and the tunnel would
+  redirect to the public name).
+
+Run order (once the AWS account works again and the Atlas 401 is fixed):
+1. Push the `Dockerfile` change to main.
+2. `terraform plan`: about 16 to add, 2 to destroy (the security group and its egress rule are
+   replaced, because the group's description changed). Then `terraform apply`. First boot: about 10 min.
+3. `terraform output stripe_webhook_url`. In the Stripe dashboard (test mode), add a webhook
+   endpoint with that URL and the four events `checkout.session.completed`, `.expired`,
+   `.async_payment_succeeded`, `.async_payment_failed`. Copy its signing secret (`whsec_…`).
+4. Put both secrets in SSM. `Read-Host` keeps the value out of PowerShell's history:
+   ```powershell
+   $v = Read-Host "Stripe secret key (sk_test_...)"
+   aws ssm put-parameter --name /capture-to-text/stripe-secret-key --type SecureString --overwrite --value $v
+   $v = Read-Host "Webhook signing secret (whsec_...)"
+   aws ssm put-parameter --name /capture-to-text/stripe-webhook-secret --type SecureString --overwrite --value $v
+   Remove-Variable v
+   ```
+5. Server shell (`terraform output shell`): `sudo /opt/refresh-secrets.sh`.
+6. Check: open `app_url` (padlock, no warning) → alice/alice → upload → DONE → pay with
+   card `4242 4242 4242 4242` → payment SUCCEEDED. Stripe's webhook page shows a 200 delivery.
+   `sudo docker compose -p capture-to-text logs caddy | grep -i "certificate obtained"`.
+
+Original plan:
 
 - Needs a public HTTPS address: Stripe webhooks must reach the server, and Keycloak
   (`sslRequired: external`) needs HTTPS off localhost. Pick a domain (Route 53 hosted zone
@@ -147,7 +196,7 @@ Original plan:
   (https://claude.ai/artifact/WAMVq4YjTydVMuGz2Miwp6), 0017 One server in a VPC
   (https://claude.ai/artifact/EySFyRLTkPhHcHuSfgQHaJ), 0018 Images in S3
   (https://claude.ai/artifact/VQ2Bm7CfFmn53wE4aMvwZA), 0019 Data in Atlas
-  (https://claude.ai/artifact/XwQNLi3Joxt1uzRSka9vJy). The lesson sources and the teaching
+  (https://claude.ai/artifact/XwQNLi3Joxt1uzRSka9vJy), 0020 A public front door (https://claude.ai/artifact/3PD8BMNAkLz2qnNKMXRzTu). The lesson sources and the teaching
   rules (`NOTES.md`) live in the separate `Learning/` folder, which isn't in this repo.
 - Use the same AWS terms as "AWS Foundations: the KedaiPay story"
   (https://claude.ai/artifact/Uz8oRDzCAzKrxidnn3hkX2): local line, IGW line, borrow the role,

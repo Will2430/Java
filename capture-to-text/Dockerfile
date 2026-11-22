@@ -12,6 +12,9 @@ RUN chmod +x mvnw && ./mvnw dependency:go-offline -B
 COPY src ./src
 # The React client; frontend-maven-plugin downloads Node and builds it during `package`.
 COPY frontend ./frontend
+# Keycloak's address for the browser. Vite writes it into the JavaScript files at build time
+# (frontend/src/auth.js). When it isn't passed, auth.js falls back to http://localhost:8180.
+ARG VITE_KEYCLOAK_URL
 RUN ./mvnw clean package -DskipTests -B
 
 # Run stage: JRE only, no build tooling, smaller attack surface and image size.
